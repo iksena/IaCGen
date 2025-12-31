@@ -29,6 +29,10 @@ DEEPSEEK_API_KEY=your_actual_deepseek_api_key_here
 - **Note**: You can simply download the project and run the [main.py](https://github.com/Tianyi2/IaCGen/blob/main/Code/main.py) in [Code](https://github.com/Tianyi2/IaCGen/tree/main/Code) folder to test IaCGen. You can edit the variables in the last part of the Python file to control how you want to use IaCGen, such as the type of model and which IaC problem/s you want to test with. 
 
 
+## License
+This project is released under Apache License 2.0. For commercial collaborations, enterprise use, or licensing inquiries, please contact (tianyi2332@163.com).
+
+
 ## Contribution
 Submit a **PR** if you want to contribute to the project.
 
