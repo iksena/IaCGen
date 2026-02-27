@@ -42,8 +42,8 @@ class IterativeTemplateGenerator:
         self.llm_model = llm_model
         self.simple_level_max_iterations = 2
         # self.singe_level_max_iterations = 3   
-        self.moderate_level_max_iterations = 4
-        self.advance_level_max_iterations = 4
+        self.moderate_level_max_iterations = 8
+        self.advance_level_max_iterations = 0
         self.max_iterations = 30
         self.max_same_error_attempts = self.simple_level_max_iterations + self.moderate_level_max_iterations + self.advance_level_max_iterations
         self.output_base_path = "llm_generated_data/template/iterative/"
@@ -59,7 +59,8 @@ class IterativeTemplateGenerator:
         elif self.llm_type == "claude":
             self.model = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
         elif self.llm_type == "deepseek":
-            self.model = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+            base_url = ("https://openrouter.ai/api/v1" if "openrouter" in self.llm_model else "https://api.deepseek.com")
+            self.model = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=base_url)
         else:
             raise ValueError(f"Unsupported LLM type: {self.llm_type}")
 
@@ -499,12 +500,13 @@ class IterativeTemplateGenerator:
             content = response.choices[0].message.content
 
         elif self.llm_type == "deepseek":
+            model_name = self.llm_model.replace("openrouter/", "")
             # Get system content from first message and remove it from messages
             system_content = conversation_history[0]["content"]
             messages = conversation_history[1:]  # All messages after system
 
             response = self.model.chat.completions.create(
-                model=self.llm_model,
+                model=model_name,
                 messages=[{"role": "system", "content": system_content}] + messages,
                 max_tokens=8000,
                 temperature=0
@@ -645,6 +647,8 @@ class IterativeTemplateGenerator:
 def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end_row=None):
     generator = IterativeTemplateGenerator(llm_type, llm_model)
     df = pd.read_csv(input_csv, encoding='latin-1')
+    df['ground_truth_path'] = df['ground_truth_path'].str.replace('\\', '/', regex=False)
+    df['ground_truth_path'] = df['ground_truth_path'].str.replace('Data/', '../Data/', regex=False)
 
     # Validate and adjust row ranges
     end_row = len(df) if end_row is None else min(end_row, len(df))
@@ -705,9 +709,9 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
 # Start
 if __name__ == "__main__":
     print("IaCGen Starting")
-    input_csv = "Data/iac.csv"
-    llm_type = "claude"  # "gemini", "gpt", "claude", or "deepseek"
-    llm_model = "claude-3-7-sonnet-20250219"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
+    input_csv = "../Data/iac_basic.csv"
+    llm_type = "deepseek"  # "gemini", "gpt", "claude", or "deepseek"
+    llm_model = "openrouter/qwen/qwen3-vl-235b-a22b-thinking"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
     output_csv = f"Result/iterative_{llm_model}_results.csv"
     start_row = 0
     end_row = 153
