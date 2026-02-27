@@ -32,8 +32,6 @@ def process_ioc_csv(
     """
     generator = IterativeTemplateGenerator(llm_type, llm_model)
     df = pd.read_csv(input_csv, encoding="latin-1")
-    df['ground_truth_path'] = df['ground_truth_path'].str.replace('\\', '/', regex=False)
-    df['ground_truth_path'] = df['ground_truth_path'].str.replace('Data/', '../Data/', regex=False)
 
     end_row = len(df) if end_row is None else min(end_row, len(df))
     if start_row >= end_row:
