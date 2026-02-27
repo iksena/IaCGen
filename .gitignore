@@ -10,3 +10,6 @@ test.py
 llm_generated_data
 result
 Result
+
+__pycache__/
+*.py[cod]

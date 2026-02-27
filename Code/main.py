@@ -15,9 +15,9 @@ from dataset.loader import process_ioc_csv
 # ---------------------------------------------------------------------------
 # Configuration — edit here
 # ---------------------------------------------------------------------------
-INPUT_CSV = "Data/iac.csv"
-LLM_TYPE  = "claude"                        # gemini | gpt | claude | deepseek
-LLM_MODEL = "claude-3-7-sonnet-20250219"
+INPUT_CSV = "../Data/iac_basic.csv"
+LLM_TYPE  = "deepseek"                        # gemini | gpt | claude | deepseek
+LLM_MODEL = "openrouter/deepseek/deepseek-r1-0528:free"
 START_ROW = 0
 END_ROW   = 153                             # set to None to process all rows
 # ---------------------------------------------------------------------------
