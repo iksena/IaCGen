@@ -348,7 +348,8 @@ class IterativeTemplateGenerator:
         })
         
         while iteration <= self.max_iterations:
-            print(f"\nIteration {iteration}")
+            print(f"\nRow {row_number} Iteration {iteration}")
+            print("Stage Error Counts:", stages_error_count)
             
             # Generate template using conversation history
             template_path = self.generate_template_with_history(
@@ -396,6 +397,7 @@ class IterativeTemplateGenerator:
                     evaluation_result,
                     stages_error_count[current_stage]
                 )
+                print(f"Row {row_number} Iteration {iteration} failed. Error: {self.error_history[-1]}")
 
             # Stop when fail too many times in a stage
             if stage_attempt_count >= (self.simple_level_max_iterations + self.moderate_level_max_iterations + self.advance_level_max_iterations):
@@ -711,9 +713,9 @@ if __name__ == "__main__":
     print("IaCGen Starting")
     input_csv = "../Data/iac_basic.csv"
     llm_type = "deepseek"  # "gemini", "gpt", "claude", or "deepseek"
-    llm_model = "openrouter/qwen/qwen3-vl-235b-a22b-thinking"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
+    llm_model = "openrouter/qwen/qwen3-235b-a22b-thinking-2507"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
     output_csv = f"Result/iterative_{llm_model}_results.csv"
-    start_row = 0
+    start_row = 63
     end_row = 153
 
     print(f"Starting iterative generation with {llm_type} model")
