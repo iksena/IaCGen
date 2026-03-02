@@ -737,9 +737,9 @@ if __name__ == "__main__":
     print("IaCGen Starting")
     input_csv = "../Data/iac_basic.csv"
     llm_type = "deepseek"  # "gemini", "gpt", "claude", or "deepseek"
-    llm_model = "openrouter/qwen/qwen3-235b-a22b-thinking-2507"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
+    llm_model = "openrouter/arcee-ai/trinity-large-preview:free"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
     output_csv = f"Result/iterative_{llm_model}_results.csv"
-    start_row = 63
+    start_row = 53
     end_row = 153
 
     print(f"Starting iterative generation with {llm_type} model")
