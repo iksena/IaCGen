@@ -456,9 +456,34 @@ class IterativeTemplateGenerator:
             'conversation_history': conversation_history
         }
 
+    def _trim_history_for_limits(self, conversation_history, keep_last_n_messages=4, max_chars=350000):
+        # 131,000 tokens is roughly 500,000 chars. We set a safe limit of ~350,000 chars for input.
+        if len(conversation_history) <= 2:
+            return conversation_history
+            
+        system_msg = [conversation_history[0]] # System Prompt
+        user_prompt = [conversation_history[1]] # Original user prompt (business need)
+        
+        # Keep only the last N messages (e.g., the last 2 assistant responses and last 2 feedback prompts)
+        recent_history = conversation_history[2:][-keep_last_n_messages:] if len(conversation_history) > 2 else []
+        
+        trimmed = system_msg + user_prompt + recent_history
+        
+        # Character-based emergency truncation for massive templates
+        total_chars = sum(len(str(m.get("content", ""))) for m in trimmed)
+        if total_chars > max_chars:
+            for m in trimmed:
+                # Truncate assistant generated templates if they are massive
+                if m["role"] == "assistant" and len(m["content"]) > 10000:
+                    m["content"] = m["content"][:10000] + "\n... [TEMPLATE TRUNCATED DUE TO LENGTH LIMITS] ...\n"
+                    
+        return trimmed
+
+
     def generate_template_with_history(self, conversation_history, iteration_num, row_num):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = f"{self.output_base_path}{self.llm_type}/{self.llm_model}/"
+        safe_history = self._trim_history_for_limits(conversation_history)
         
         if self.llm_type == "gemini":
             # Convert conversation history to Gemini format
@@ -503,9 +528,8 @@ class IterativeTemplateGenerator:
 
         elif self.llm_type == "deepseek":
             model_name = self.llm_model.replace("openrouter/", "")
-            # Get system content from first message and remove it from messages
-            system_content = conversation_history[0]["content"]
-            messages = conversation_history[1:]  # All messages after system
+            system_content = safe_history[0]["content"]
+            messages = safe_history[1:]
 
             response = self.model.chat.completions.create(
                 model=model_name,
