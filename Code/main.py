@@ -26,6 +26,7 @@ GEMIN_API_KEY = os.getenv('GEMIN_API_KEY', '')
 CHATGPT_API_KEY = os.getenv('CHATGPT_API_KEY', '')
 CLAUDE_API_KEY = os.getenv('CLAUDE_API_KEY', '')
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
+GITHUB_TOKEN = os.getenv('GITHUB_TOKEN', '')
 
 
 class IterativeTemplateGenerator:
@@ -56,6 +57,8 @@ class IterativeTemplateGenerator:
             self.model = genai.GenerativeModel(self.llm_model)
         elif self.llm_type == "gpt":
             self.model = OpenAI(api_key=CHATGPT_API_KEY)
+        elif self.llm_type == "github":
+            self.model = OpenAI(base_url="https://models.inference.ai.azure.com", api_key=GITHUB_TOKEN)
         elif self.llm_type == "claude":
             self.model = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
         elif self.llm_type == "deepseek":
@@ -543,7 +546,28 @@ class IterativeTemplateGenerator:
                 temperature=0
             )
             content = response.choices[0].message.content
+
+            if content is None or content.strip() == "":
+                print(f"Warning: Received empty response from Deepseek model {model_name}. Check API usage and model status.")
+                content = "<template_planning>\n<iac_template>\nAWSTemplateFormatVersion: '2010-09-09'\nDescription: Empty template generated due to model response issue.\nResources:\n  EmptyResource:\n    Type: 'AWS::CloudFormation::WaitConditionHandle'\n</iac_template>\n</template_planning>"
         
+        elif self.llm_type == "github":
+            model_name = self.llm_model
+            system_content = safe_history[0]["content"]
+            messages = safe_history[1:]
+
+            response = self.model.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "system", "content": system_content}] + messages,
+                max_tokens=8000,
+                temperature=0
+            )
+            content = response.choices[0].message.content
+
+            if content is None or content.strip() == "":
+                print(f"Warning: Received empty response from Deepseek model {model_name}. Check API usage and model status.")
+                content = "<template_planning>\n<iac_template>\nAWSTemplateFormatVersion: '2010-09-09'\nDescription: Empty template generated due to model response issue.\nResources:\n  EmptyResource:\n    Type: 'AWS::CloudFormation::WaitConditionHandle'\n</iac_template>\n</template_planning>"
+
         elif self.llm_type == "claude":  # claude
             # Get system content from first message and remove it from messages
             system_content = conversation_history[0]["content"]
@@ -752,11 +776,11 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
 if __name__ == "__main__":
     print("IaCGen Starting")
     input_csv = "../Data/iac_basic.csv"
-    llm_type = "ollama"  # "gemini", "gpt", "claude", or "deepseek"
-    llm_model = "qwen2.5-coder:7b"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
+    llm_type = "github"  # "gemini", "gpt", "claude", or "deepseek"
+    llm_model = "gpt-5-mini"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
     # llm_model = "openrouter/arcee-ai/trinity-large-preview:free"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
     output_csv = f"Result/iterative_{llm_model}_results.csv"
-    start_row = 30
+    start_row = 0
     end_row = 153
 
     print(f"Starting iterative generation with {llm_type} model")
