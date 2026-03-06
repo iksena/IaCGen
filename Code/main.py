@@ -40,9 +40,9 @@ class IterativeTemplateGenerator:
     def __init__(self, llm_type, llm_model):
         self.llm_type = llm_type
         self.llm_model = llm_model
-        self.simple_level_max_iterations = 2
+        self.simple_level_max_iterations = 3
         # self.singe_level_max_iterations = 3   
-        self.moderate_level_max_iterations = 8
+        self.moderate_level_max_iterations = 7
         self.advance_level_max_iterations = 0
         self.max_iterations = 30
         self.max_same_error_attempts = self.simple_level_max_iterations + self.moderate_level_max_iterations + self.advance_level_max_iterations
@@ -61,6 +61,11 @@ class IterativeTemplateGenerator:
         elif self.llm_type == "deepseek":
             base_url = ("https://openrouter.ai/api/v1" if "openrouter" in self.llm_model else "https://api.deepseek.com")
             self.model = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=base_url)
+        elif self.llm_type == "ollama":
+            self.model = OpenAI(
+                api_key="ollama",
+                base_url="http://localhost:11434/v1"
+            )
         else:
             raise ValueError(f"Unsupported LLM type: {self.llm_type}")
 
@@ -456,9 +461,9 @@ class IterativeTemplateGenerator:
             'conversation_history': conversation_history
         }
 
-    def _trim_history_for_limits(self, conversation_history, keep_last_n_messages=4, max_chars=350000):
+    def _trim_history_for_limits(self, conversation_history, keep_last_n_messages=4, max_chars=500000):
         # 131,000 tokens is roughly 500,000 chars. We set a safe limit of ~350,000 chars for input.
-        if len(conversation_history) <= 2:
+        if len(conversation_history) <= 4:
             return conversation_history
             
         system_msg = [conversation_history[0]] # System Prompt
@@ -552,6 +557,17 @@ class IterativeTemplateGenerator:
                 temperature=0
             )
             content = response.content[0].text
+        elif self.llm_type == "ollama":
+            system_content = safe_history[0]["content"]
+            messages = safe_history[1:]
+            response = self.model.chat.completions.create(
+                model=self.llm_model,
+                messages=[{"role": "system", "content": system_content}] + messages,
+                max_tokens=8000,
+                temperature=0
+            )
+            content = response.choices[0].message.content
+
         
         # Process and save the template
         # Remove content within <template_planning>...</template_planning>
@@ -736,10 +752,11 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
 if __name__ == "__main__":
     print("IaCGen Starting")
     input_csv = "../Data/iac_basic.csv"
-    llm_type = "deepseek"  # "gemini", "gpt", "claude", or "deepseek"
-    llm_model = "openrouter/arcee-ai/trinity-large-preview:free"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
+    llm_type = "ollama"  # "gemini", "gpt", "claude", or "deepseek"
+    llm_model = "qwen2.5-coder:7b"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
+    # llm_model = "openrouter/arcee-ai/trinity-large-preview:free"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
     output_csv = f"Result/iterative_{llm_model}_results.csv"
-    start_row = 53
+    start_row = 30
     end_row = 153
 
     print(f"Starting iterative generation with {llm_type} model")
