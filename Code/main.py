@@ -41,11 +41,10 @@ class IterativeTemplateGenerator:
     def __init__(self, llm_type, llm_model):
         self.llm_type = llm_type
         self.llm_model = llm_model
-        self.simple_level_max_iterations = 3
-        # self.singe_level_max_iterations = 3   
-        self.moderate_level_max_iterations = 7
+        self.simple_level_max_iterations = 0
+        self.moderate_level_max_iterations = 5
         self.advance_level_max_iterations = 0
-        self.max_iterations = 30
+        self.max_iterations = 5
         self.max_same_error_attempts = self.simple_level_max_iterations + self.moderate_level_max_iterations + self.advance_level_max_iterations
         self.output_base_path = "llm_generated_data/template/iterative/"
         self.setup_llm_model()
