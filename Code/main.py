@@ -17,7 +17,7 @@ from evaluation.cloud_evaluation import (
     evaluate_template_deployment,
     analyze_resource_coverage
 )
-from generation.prompts.prompt_for_cloud import TOP_PROMPT, BOTTOM_PROMPT, FORMATE_SYSTEM_PROMPT
+from generation.prompts.prompt_for_cloud import TOP_PROMPT, BOTTOM_PROMPT, FORMATE_SYSTEM_PROMPT, TWO_STEP_GENERATE_PROMPT, TWO_STEP_PLAN_BOTTOM, TWO_STEP_PLAN_TOP, TWO_STEP_SYSTEM_PROMPT
 
 # Load environment variables from .env file
 load_dotenv()
@@ -341,17 +341,42 @@ class IterativeTemplateGenerator:
         iteration = 1
         conversation_history = []
         highest_feedback_level = self.FEEDBACK_LEVELS[0]  # Start with 'simple'
+
+        # --- PHASE 1: PLANNING (CoT) ---
+        print(f"\nRow {row_number} - Generating Architecture Plan...")
         
-        # Initialize conversation with system context
+        # 1. Initialize system prompt
         conversation_history.append({
             "role": "system",
-            "content": FORMATE_SYSTEM_PROMPT
+            "content": TWO_STEP_SYSTEM_PROMPT
         })
+        
+        # 2. Ask for the plan
+        conversation_history.append({
+            "role": "user",
+            "content": TWO_STEP_PLAN_TOP + initial_prompt + TWO_STEP_PLAN_BOTTOM
+        })
+        
+        # 3. Get the plan from the LLM and add it to history
+        plan_text = self.generate_plan_response(conversation_history)
+        conversation_history.append({
+            "role": "assistant",
+            "content": plan_text
+        })
+        
+        # --- PHASE 2: TEMPLATE GENERATION & EVALUATION LOOP ---
+        # 4. Prompt the LLM to write the code based on the plan
+
+        # Initialize conversation with system context
+        # conversation_history.append({
+        #     "role": "system",
+        #     "content": FORMATE_SYSTEM_PROMPT
+        # })
         
         # Add initial user prompt
         conversation_history.append({
             "role": "user",
-            "content": TOP_PROMPT + initial_prompt + BOTTOM_PROMPT
+            "content": TWO_STEP_GENERATE_PROMPT
         })
         
         while iteration <= self.max_iterations:
@@ -485,6 +510,49 @@ class IterativeTemplateGenerator:
                     m["content"] = m["content"][:10000] + "\n... [TEMPLATE TRUNCATED DUE TO LENGTH LIMITS] ...\n"
                     
         return trimmed
+
+    def generate_plan_response(self, conversation_history):
+        """Helper method to get the CoT plan without parsing for YAML tags or saving to file."""
+        safe_history = self._trim_history_for_limits(conversation_history)
+        
+        if self.llm_type == "gemini":
+            gemini_messages = [msg["content"] for msg in conversation_history if msg["role"] != "system"]
+            response = self.model.generate_content(
+                "\n".join(gemini_messages),
+                generation_config=genai.GenerationConfig(max_output_tokens=8000, temperature=0.2)
+            )
+            return response.text
+            
+        elif self.llm_type == "gpt" and self.llm_model == "o3-mini":
+            system_content = conversation_history[0]["content"]
+            response = self.model.chat.completions.create(
+                model=self.llm_model,
+                messages=[{"role": "system", "content": system_content}] + conversation_history[1:],
+                max_completion_tokens=8000,
+            )
+            return response.choices[0].message.content
+            
+        elif self.llm_type in ["gpt", "deepseek", "github", "ollama"]:
+            model_name = self.llm_model.replace("openrouter/", "") if self.llm_type == "deepseek" else self.llm_model
+            system_content = conversation_history[0]["content"]
+            response = self.model.chat.completions.create(
+                model=model_name,
+                messages=[{"role": "system", "content": system_content}] + conversation_history[1:],
+                max_tokens=8000,
+                temperature=0.2
+            )
+            return response.choices[0].message.content
+
+        elif self.llm_type == "claude":
+            system_content = conversation_history[0]["content"]
+            response = self.model.messages.create(
+                model=self.llm_model,
+                system=system_content,
+                messages=conversation_history[1:],
+                max_tokens=8000,
+                temperature=0.2
+            )
+            return response.content[0].text
 
 
     def generate_template_with_history(self, conversation_history, iteration_num, row_num):

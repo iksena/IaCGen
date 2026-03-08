@@ -53,3 +53,30 @@ TEMPLATE_GENERATE_PROMPT = """You are an expert CloudFormation engineer. Generat
 SYSMTE_TEMPLATE_GENERATE_PROMPT = """You are an expert CloudFormation engineer. Generate only valid CloudFormation YAML. Do not include any explanations, markdown formatting, or backticks. The template should start with AWSTemplateFormatVersion and end with the last property. You should include all the necessary resources for the given need."""
 GPT_TEMPLATE_GENERATE_HELPER_PROMPT = "Can you help us write the CloudFormation template?"
 SYSTEM_PROMPT = "You are an expert in AWS CloudFormation template generation. Your task is to generate and improve templates based on feedback."
+
+# --- TWO-STEP CoT PROMPTS ---
+TWO_STEP_SYSTEM_PROMPT = """You are an Expert AWS Cloud Architect and DevOps Engineer. 
+Your job is to design robust, production-ready AWS environments and then implement them using AWS CloudFormation.
+You operate in a strict automated pipeline."""
+
+# Step 1: The Planning Prompt
+TWO_STEP_PLAN_TOP = "Please analyze the following business need and create a detailed architectural deployment plan:\n\n<business_need>\n"
+TWO_STEP_PLAN_BOTTOM = """
+</business_need>
+
+Instructions for your plan:
+1. List the key AWS services required.
+2. Identify all necessary properties and dependencies (e.g., Internet Gateways attached to VPCs before provisioning Elastic IPs).
+3. If specific properties (like CIDR blocks or Instance Types) are missing, explicitly state the safe AWS defaults you will use.
+4. Plan out how to dynamically fetch resources like AMIs using SSM Parameter Store to avoid hardcoding.
+
+Do NOT write any CloudFormation YAML yet. Only provide your detailed reasoning and architecture plan."""
+
+# Step 2: The Generation Prompt
+TWO_STEP_GENERATE_PROMPT = """Excellent. Based on the architecture plan you just created and the original business need, please generate the complete CloudFormation YAML template.
+
+CRITICAL INSTRUCTIONS:
+1. Start the template with 'AWSTemplateFormatVersion'.
+2. Provide all required properties for each resource and ensure proper YAML syntax.
+3. Write your complete CloudFormation YAML template strictly inside <iac_template></iac_template> tags.
+4. Do NOT include any markdown code blocks (like ```yaml) inside or outside the tags."""
