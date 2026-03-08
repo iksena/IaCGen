@@ -1,7 +1,33 @@
+AWS_BEST_PRACTICES_REMINDER = """
+### CRITICAL AWS BEST PRACTICES & LINTING RULES
+To ensure the template deploys successfully and passes cfn-lint, you MUST adhere to the following rules based on common historical failures:
+
+1. **Parameters & Missing Values:** - NEVER define Parameters without providing a safe `Default` value (e.g., default CIDR blocks, default dummy email addresses, or default KeyPair names like 'default-key'). The automated deployment will fail if parameters require manual input.
+   - If a Parameter has an `AllowedPattern`, its `Default` value must strictly match that pattern.
+
+2. **Hardcoding (AMIs & AZs):**
+   - NEVER hardcode AMI IDs (e.g., ami-0c55...). Use AWS Systems Manager (SSM) Parameter Store to fetch the latest AMIs dynamically (e.g., 'resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2').
+   - NEVER hardcode Availability Zones (e.g., 'us-east-1a'). Always use the `Fn::Select` and `Fn::GetAZs` intrinsic functions.
+
+3. **S3 Bucket Modernization:**
+   - Do NOT use the legacy `AccessControl` property for S3 Buckets. Use `AWS::S3::BucketPolicy` instead. 
+   - If `AccessControl` is strictly required for some reason, you MUST also configure `OwnershipControls`.
+
+4. **Resource Protection & Linting:**
+   - If you specify a `DeletionPolicy` on a stateful resource (like a database or bucket), you MUST also include an `UpdateReplacePolicy`.
+   - Do not use `Fn::Sub` (or `!Sub`) if the string does not contain any variables (e.g., `${Var}`).
+   - Do not hallucinate properties. For example, do not add `FilterCriteria` or `Default` to properties where the CloudFormation schema does not allow them.
+
+5. **Security & Runtimes:**
+   - Use dynamic references (e.g., `{{resolve:secretsmanager:...}}` or `{{resolve:ssm-secure:...}}`) instead of raw Parameters for passing secrets or passwords.
+   - For AWS Lambda, NEVER use deprecated runtimes (like `python3.8`). Always use the latest supported runtimes (e.g., `python3.12` or `nodejs20.x`).
+   - Ensure AWS managed IAM Policy ARNs and Resource Type names are exact and currently valid (e.g., use `AWS::Logs::QueryDefinition`, not `AWS::CloudWatchLogs::QueryDefinition`).
+"""
+
 # Prompts used in IaCGen
 # User Input Chain-of-thought Prompt where the iac problem will be placed in between the TOP and BOTTOM PROMPT when generation. 
 TOP_PROMPT = "You are an expert AWS DevOps engineer with extensive experience in creating CloudFormation templates. Your task is to generate a valid, production ready and deployable AWS CloudFormation YAML template based on the following business need:\n\n<business_need>\n"
-BOTTOM_PROMPT = """
+BOTTOM_PROMPT = f"""
 </business_need>
 
 Instructions:
@@ -16,11 +42,7 @@ Instructions:
     e. Follow AWS CloudFormation best practices and cloudformation-linter rules.
     f. End the template with the last property of the last resource.
 
-### CRITICAL AWS BEST PRACTICES FOR DEPLOYMENT
-- Safe Defaults: If specific properties are omitted, use safe AWS defaults (e.g., '10.0.0.0/16' for VPCs, 't3.micro' for instances).
-- Dynamic AMIs: NEVER hardcode AMI IDs. Use AWS Systems Manager (SSM) Parameter Store to fetch the latest Amazon Linux AMI dynamically (e.g., 'resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2').
-- Explicit Dependencies: Use 'DependsOn' for resources that require prior completion (e.g., Elastic IP requires an InternetGatewayAttachment).
-- IAM Roles: Always include a structurally valid 'AssumeRolePolicyDocument' with the correct Principal.
+{AWS_BEST_PRACTICES_REMINDER}
 
 ### OUTPUT FORMAT REQUIREMENTS
 Before generating the final template, wrap your planning process in <template_planning> tags. In this section:
