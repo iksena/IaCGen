@@ -783,60 +783,82 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
     df['ground_truth_path'] = df['ground_truth_path'].str.replace('\\', '/', regex=False)
     df['ground_truth_path'] = df['ground_truth_path'].str.replace('Data/', '../Data/', regex=False)
 
+    if os.path.exists(output_csv):
+        try:
+            existing_results_df = pd.read_csv(output_csv)
+            if not existing_results_df.empty and 'row_number' in existing_results_df.columns:
+                last_processed_row = existing_results_df['row_number'].max()
+                if pd.notna(last_processed_row):
+                    # Resume from the row immediately after the last successfully processed one
+                    start_row = max(start_row, int(last_processed_row) + 1)
+                    print(f"\n[INFO] Found existing output file. Resuming execution from row {start_row}.\n")
+        except Exception as e:
+            print(f"[WARNING] Could not read existing output file to resume: {e}")
+
     # Validate and adjust row ranges
     end_row = len(df) if end_row is None else min(end_row, len(df))
     if start_row >= end_row:
-        raise ValueError(f"Invalid row range: start_row ({start_row}) must be less than end_row ({end_row})")
+        print(f"All rows up to {end_row} have already been processed. Exiting.")
+        return
     
     print(f"Processing {end_row - start_row} rows from {start_row} to {end_row-1} row")
+
+    # Ensure output directories exist
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    error_csv_path = f"Result/error_tracking/{llm_model}_error_history.csv"
+    os.makedirs(os.path.dirname(error_csv_path), exist_ok=True)
     
-    results = []
     try:
         for index, row in df.iloc[start_row:end_row].iterrows():
-            result = generator.process_template(row['prompt'], row['ground_truth_path'], index)
-            results.append({
-                # Basic Information
-                'row_number': index,
-                'prompt': row['prompt'],
-                'ground_truth_path': row['ground_truth_path'],
-                'final_template_path': result.get('template_path'),
+            try:
+                result = generator.process_template(row['prompt'], row['ground_truth_path'], index)
+                row_result = {
+                    # Basic Information
+                    'row_number': index,
+                    'prompt': row['prompt'],
+                    'ground_truth_path': row['ground_truth_path'],
+                    'final_template_path': result.get('template_path'),
 
-                # Success Metrics
-                'success': result['success'],
-                'failure_reason': result.get('reason', None),
-                'error_message': result.get('error', None),
-                'failed_at_stage': result.get('failed_stage', None) if not result['success'] else None,
-                'total_iterations': result.get('iterations'),    
-                'highest_feedback_level': result.get('highest_feedback_level'),
+                    # Success Metrics
+                    'success': result['success'],
+                    'failure_reason': result.get('reason', None),
+                    'error_message': result.get('error', None),
+                    'failed_at_stage': result.get('failed_stage', None) if not result['success'] else None,
+                    'total_iterations': result.get('iterations'),    
+                    'highest_feedback_level': result.get('highest_feedback_level'),
 
-                # Coverage and Accuracy Metrics
-                'coverage_percentage': result.get('coverage_percentage', None),
-                'accuracy_percentage': result.get('accuracy_percentage', None),
-                # 'missing_resources': result.get('missing_resources', []),
-                # 'extra_resources': result.get('extra_resources', []),
+                    # Coverage and Accuracy Metrics
+                    'coverage_percentage': result.get('coverage_percentage', None),
+                    'accuracy_percentage': result.get('accuracy_percentage', None),
+                    # 'missing_resources': result.get('missing_resources', []),
+                    # 'extra_resources': result.get('extra_resources', []),
 
-                # Model Information
-                # 'llm_type': generator.llm_type,
-                # 'llm_model': generator.llm_model,
-            })
-            generator.generate_conversation_history(result['conversation_history'], "llm_generated_data/iterative/history", result['success'], index)
+                    # Model Information
+                    # 'llm_type': generator.llm_type,
+                    # 'llm_model': generator.llm_model,
+                }
+                generator.generate_conversation_history(result['conversation_history'], "llm_generated_data/iterative/history", result['success'], index)
+
+                # 2. CONTINUOUS RESULT SAVING: Append to the CSV immediately
+                results_df = pd.DataFrame([row_result])
+                if os.path.exists(output_csv):
+                    results_df.to_csv(output_csv, mode='a', header=False, index=False)
+                else:
+                    results_df.to_csv(output_csv, mode='w', header=True, index=False)
+                
+                # 3. CONTINUOUS ERROR TRACKING: Flush error history to CSV immediately
+                IterativeTemplateGenerator.generate_error_history_csv(error_csv_path)
+                
+                print(f"[SUCCESS] Saved data for row {index} to disk.")
+            except Exception as e:
+                print(f"[ERROR] Failed at row {index}. Reason: {e}.")
+                # Flush any captured errors to disk even if the row hit an unhandled exception
+                IterativeTemplateGenerator.generate_error_history_csv(error_csv_path)
+    except KeyboardInterrupt:
+        print("\n[INFO] Execution interrupted by user (Ctrl+C). All progress up to the last completed row has been safely saved.")
+        sys.exit(0)
     except Exception as e:
-        print(f"Fail at {index}. Reason: {e}.")
-    finally:
-        # Create the directory for output_csv if it doesn't exist
-        os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-
-        if os.path.exists(output_csv):
-            existing_df = pd.read_csv(output_csv)
-            results_df = pd.DataFrame(results)
-            combined_df = pd.concat([existing_df, results_df], ignore_index=True)
-            combined_df.to_csv(output_csv, index=False)
-        else:
-            pd.DataFrame(results).to_csv(output_csv, index=False)
-        # Generate error history CSV
-        error_csv_path = f"result/error_tracking/{llm_model}_error_history.csv"
-        os.makedirs(os.path.dirname(error_csv_path), exist_ok=True)
-        IterativeTemplateGenerator.generate_error_history_csv(error_csv_path)
+        print(f"\n[FATAL ERROR] Pipeline crashed: {e}")
 
 
 # Start
