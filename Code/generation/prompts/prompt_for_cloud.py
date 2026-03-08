@@ -83,7 +83,7 @@ You operate in a strict automated pipeline."""
 
 # Step 1: The Planning Prompt
 TWO_STEP_PLAN_TOP = "Please analyze the following business need and create a detailed architectural deployment plan:\n\n<business_need>\n"
-TWO_STEP_PLAN_BOTTOM = """
+TWO_STEP_PLAN_BOTTOM = f"""
 </business_need>
 
 Instructions for your plan:
@@ -91,6 +91,8 @@ Instructions for your plan:
 2. Identify all necessary properties and dependencies (e.g., Internet Gateways attached to VPCs before provisioning Elastic IPs).
 3. If specific properties (like CIDR blocks or Instance Types) are missing, explicitly state the safe AWS defaults you will use.
 4. Plan out how to dynamically fetch resources like AMIs using SSM Parameter Store to avoid hardcoding.
+
+{AWS_BEST_PRACTICES_REMINDER}
 
 Do NOT write any CloudFormation YAML yet. Only provide your detailed reasoning and architecture plan."""
 
