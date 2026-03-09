@@ -430,6 +430,9 @@ class IterativeTemplateGenerator:
                     stages_error_count[current_stage]
                 )
                 print(f"Row {row_number} Iteration {iteration} failed. Error: {self.error_history[-1]}")
+                error_csv_path = f"Result/error_tracking/{self.llm_model}_error_history.csv"
+                os.makedirs(os.path.dirname(error_csv_path), exist_ok=True)
+                self.generate_error_history_csv(error_csv_path)
 
             # Stop when fail too many times in a stage
             if stage_attempt_count >= (self.simple_level_max_iterations + self.moderate_level_max_iterations + self.advance_level_max_iterations):
