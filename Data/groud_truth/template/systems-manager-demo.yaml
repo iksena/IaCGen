@@ -39,7 +39,7 @@ Resources:
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.1.10.0/24
-      AvailabilityZone: !Select [0, !GetAZs]    # Get the first AZ in the list
+      AvailabilityZone: !Select [0, !GetAZs ""]    # Get the first AZ in the list
       MapPublicIpOnLaunch: true     
       Tags:
       - Key: Name
