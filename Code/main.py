@@ -817,7 +817,7 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
 
     # Ensure output directories exist
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-    error_csv_path = f"Result/error_tracking/{llm_model}_error_history.csv"
+    error_csv_path = f"Result/error_tracking/{llm_model}_error_history-{prompt_strategy}.csv"
     os.makedirs(os.path.dirname(error_csv_path), exist_ok=True)
     
     try:
