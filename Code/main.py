@@ -17,7 +17,12 @@ from evaluation.cloud_evaluation import (
     evaluate_template_deployment,
     analyze_resource_coverage
 )
-from generation.prompts.prompt_for_cloud import TOP_PROMPT, BOTTOM_PROMPT, FORMATE_SYSTEM_PROMPT, TWO_STEP_GENERATE_PROMPT, TWO_STEP_PLAN_BOTTOM, TWO_STEP_PLAN_TOP, TWO_STEP_SYSTEM_PROMPT
+from generation.prompts.prompt_for_cloud import (
+    TOP_PROMPT, BOTTOM_PROMPT, FORMATE_SYSTEM_PROMPT,
+    TWO_STEP_GENERATE_PROMPT, TWO_STEP_PLAN_BOTTOM, TWO_STEP_PLAN_TOP, TWO_STEP_SYSTEM_PROMPT,
+    SCOT_SYSTEM_PROMPT, SCOT_PLAN_TOP, SCOT_PLAN_BOTTOM, SCOT_GENERATE_PROMPT,
+    CGO_SYSTEM_PROMPT, CGO_PLAN_TOP, CGO_PLAN_BOTTOM, CGO_GENERATE_PROMPT,
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -38,9 +43,10 @@ class IterativeTemplateGenerator:
     # Static variable to store error history across all instances
     error_history = []
 
-    def __init__(self, llm_type, llm_model):
+    def __init__(self, llm_type, llm_model, prompt_strategy="cgo"):
         self.llm_type = llm_type
         self.llm_model = llm_model
+        self.prompt_strategy = prompt_strategy
         self.simple_level_max_iterations = 0
         self.moderate_level_max_iterations = 5
         self.advance_level_max_iterations = 0
@@ -344,17 +350,23 @@ class IterativeTemplateGenerator:
 
         # --- PHASE 1: PLANNING (CoT) ---
         print(f"\nRow {row_number} - Generating Architecture Plan...")
+        strategy_map = {
+            "two_step": (TWO_STEP_SYSTEM_PROMPT, TWO_STEP_PLAN_TOP,  TWO_STEP_PLAN_BOTTOM,  TWO_STEP_GENERATE_PROMPT),
+            "scot":     (SCOT_SYSTEM_PROMPT,     SCOT_PLAN_TOP,      SCOT_PLAN_BOTTOM,      SCOT_GENERATE_PROMPT),
+            "cgo":      (CGO_SYSTEM_PROMPT,      CGO_PLAN_TOP,       CGO_PLAN_BOTTOM,       CGO_GENERATE_PROMPT),
+        }
+        sys_prompt, plan_top, plan_bottom, gen_prompt = strategy_map[self.prompt_strategy]
         
         # 1. Initialize system prompt
         conversation_history.append({
             "role": "system",
-            "content": TWO_STEP_SYSTEM_PROMPT
+            "content": sys_prompt
         })
         
         # 2. Ask for the plan
         conversation_history.append({
             "role": "user",
-            "content": TWO_STEP_PLAN_TOP + initial_prompt + TWO_STEP_PLAN_BOTTOM
+            "content": plan_top + initial_prompt + plan_bottom
         })
         
         # 3. Get the plan from the LLM and add it to history
@@ -376,7 +388,7 @@ class IterativeTemplateGenerator:
         # Add initial user prompt
         conversation_history.append({
             "role": "user",
-            "content": TWO_STEP_GENERATE_PROMPT
+            "content": gen_prompt
         })
         
         while iteration <= self.max_iterations:
@@ -777,8 +789,8 @@ class IterativeTemplateGenerator:
         return output_path
 
 
-def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end_row=None):
-    generator = IterativeTemplateGenerator(llm_type, llm_model)
+def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end_row=None, prompt_strategy="cgo"):
+    generator = IterativeTemplateGenerator(llm_type, llm_model, prompt_strategy=prompt_strategy)
     df = pd.read_csv(input_csv, encoding='latin-1')
     df['ground_truth_path'] = df['ground_truth_path'].str.replace('\\', '/', regex=False)
     df['ground_truth_path'] = df['ground_truth_path'].str.replace('Data/', '../Data/', regex=False)
@@ -864,16 +876,17 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
 # Start
 if __name__ == "__main__":
     print("IaCGen Starting")
+    prompt_strategy = "cgo"  # "two_step", "scot", or "cgo"
     input_csv = "../Data/iac_basic.csv"
     llm_type = "github"  # "gemini", "gpt", "claude", or "deepseek"
     llm_model = "gpt-5-mini"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
     # llm_model = "openrouter/arcee-ai/trinity-large-preview:free"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
-    output_csv = f"Result/iterative_{llm_model}_results.csv"
+    output_csv = f"Result/iterative_{llm_model}_results-{prompt_strategy}.csv"
     start_row = 0
     end_row = 153
 
     print(f"Starting iterative generation with {llm_type} model")
 
-    process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=start_row, end_row=end_row)  # start row include, end row exclude
+    process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=start_row, end_row=end_row, prompt_strategy=prompt_strategy)  # start row include, end row exclude
 
     print(f"Generation completed. Results saved to: {output_csv}")

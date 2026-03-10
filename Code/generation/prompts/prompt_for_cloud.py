@@ -104,3 +104,164 @@ CRITICAL INSTRUCTIONS:
 2. Provide all required properties for each resource and ensure proper YAML syntax.
 3. Write your complete CloudFormation YAML template strictly inside <iac_template></iac_template> tags.
 4. Do NOT include any markdown code blocks (like ```yaml) inside or outside the tags."""
+
+# ─────────────────────────────────────────────
+# SCOT: Structured Chain-of-Thought Prompting
+# ─────────────────────────────────────────────
+
+SCOT_SYSTEM_PROMPT = """You are an Expert AWS Cloud Architect and DevOps Engineer.
+Your job is to design robust, production-ready AWS environments and then implement them using AWS CloudFormation.
+You operate in a strict automated pipeline."""
+
+# Phase 1 – Generate the SCoT plan (few-shot, 3 examples from ground truth below)
+SCOT_PLAN_TOP = """Analyze the following business need and produce a structured deployment plan using ONLY sequence, branch, and loop constructs.
+Format each plan as:
+  Input: <parameters the template will accept>
+  Output: <AWS resource types that will be created>
+  1. sequence step
+  2. if <condition>
+  3.   branch step
+  4. for each <item>
+  5.   loop step
+
+Here are three examples spanning easy to complex deployments:
+
+--- Example 1 (Difficulty Level 1 – Single Resource) ---
+Business need: We need a CloudFormation template that creates an AWS SQS queue with basic configuration.
+Input: (none)
+Output: AWS::SQS::Queue
+1. Define AWS::SQS::Queue resource MyQueue
+2. Set VisibilityTimeout to 5
+
+--- Example 2 (Difficulty Level 3 – Multi-Resource with Cross-References) ---
+Business need: We need a CloudFormation template that creates an Amazon S3 bucket for website hosting and with a DeletionPolicy.
+Input: (none)
+Output: AWS::S3::Bucket, AWS::S3::BucketPolicy
+1. Define AWS::S3::Bucket resource S3Bucket
+2.   Set WebsiteConfiguration IndexDocument index.html ErrorDocument error.html
+3.   Set DeletionPolicy Retain and UpdateReplacePolicy Retain
+4.   if bucket must be publicly readable for website hosting
+5.     Set PublicAccessBlockConfiguration all four flags to false
+6. Define AWS::S3::BucketPolicy resource BucketPolicy
+7.   Set PolicyDocument Version 2012-10-17 Statement Allow s3:GetObject Principal *
+8.   Reference bucket ARN using !Join on arn:aws:s3::: + !Ref S3Bucket + /*
+9.   Set Bucket property to !Ref S3Bucket
+10. Define Outputs
+11.   WebsiteURL via !GetAtt S3Bucket.WebsiteURL
+12.   S3BucketSecureURL via !Join https:// + !GetAtt S3Bucket.DomainName
+
+--- Example 3 (Difficulty Level 5 – Full Production Pipeline) ---
+Business need: We need a CloudFormation template that creates an automated deployment pipeline for the Etherpad application using AWS CodeDeploy. The template should deploy Etherpad on EC2 instances within an Auto Scaling group across two subnets, fronted by an internet-facing Application Load Balancer for traffic distribution. It must provision a MySQL RDS instance for database storage and integrate AWS Systems Manager (SSM) for secure parameter storage. The solution should automate instance provisioning with a launch template that installs dependencies (Node.js, CodeDeploy agent) and signals CloudFormation upon readiness. An S3 bucket stores deployment artifacts, while CodeDeploy resources manage application updates.
+Input:
+  - DBPassword (String, NoEcho, Default: admin1234, secure DB password)
+  - InstanceType (String, Default: t3.micro, AllowedValues: [t3.micro, t3.small, t3.medium])
+  - KeyName (String, Default: default-key, SSH key pair)
+Output:
+  AWS::EC2::VPC, AWS::EC2::Subnet (x2), AWS::EC2::InternetGateway,
+  AWS::EC2::RouteTable, AWS::ElasticLoadBalancingV2::LoadBalancer,
+  AWS::ElasticLoadBalancingV2::TargetGroup, AWS::ElasticLoadBalancingV2::Listener,
+  AWS::AutoScaling::AutoScalingGroup, AWS::AutoScaling::LaunchTemplate,
+  AWS::RDS::DBInstance, AWS::RDS::DBSubnetGroup,
+  AWS::S3::Bucket, AWS::SSM::Parameter,
+  AWS::CodeDeploy::Application, AWS::CodeDeploy::DeploymentGroup,
+  AWS::IAM::Role (x2 — EC2 instance role, CodeDeploy service role), AWS::IAM::InstanceProfile
+1. Define Parameters DBPassword NoEcho, InstanceType with AllowedValues, KeyName
+2. Define VPC with CIDR 10.0.0.0/16
+3. Define InternetGateway and attach to VPC via VPCGatewayAttachment
+4. for each of two AZs (us-east-1a, us-east-1b)
+5.   Define AWS::EC2::Subnet with public CIDR (10.0.1.0/24, 10.0.2.0/24) MapPublicIpOnLaunch true
+6. Define RouteTable with route 0.0.0.0/0 → InternetGateway
+7. for each Subnet
+8.   Associate subnet with RouteTable via SubnetRouteTableAssociation
+9. Define AWS::EC2::SecurityGroup ALBSecurityGroup allowing HTTP port 80 ingress 0.0.0.0/0
+10. Define AWS::EC2::SecurityGroup EC2SecurityGroup allowing HTTP port 80 ingress from ALBSecurityGroup only
+11. Define AWS::EC2::SecurityGroup RDSSecurityGroup allowing MySQL port 3306 ingress from EC2SecurityGroup only
+12. Define AWS::ElasticLoadBalancingV2::LoadBalancer internet-facing across both subnets
+13. Define AWS::ElasticLoadBalancingV2::TargetGroup port 80 HTTP targeting EC2 ASG
+14. Define AWS::ElasticLoadBalancingV2::Listener port 80 forwarding to TargetGroup
+15. Define AWS::IAM::Role EC2InstanceRole trusting ec2.amazonaws.com with SSM + CodeDeploy + S3 permissions
+16. Define AWS::IAM::InstanceProfile wrapping EC2InstanceRole
+17. Define AWS::IAM::Role CodeDeployServiceRole trusting codedeploy.amazonaws.com with AWSCodeDeployRole policy
+18. Define AWS::S3::Bucket ArtifactsBucket for deployment artifacts
+19. Define AWS::SSM::Parameter storing DB connection string referencing RDS endpoint
+20. Define AWS::RDS::DBSubnetGroup across both subnets
+21. Define AWS::RDS::DBInstance MySQL db.t3.micro
+22.   Set MasterUsername admin MasterUserPassword !Ref DBPassword
+23.   Set DBSubnetGroupName !Ref DBSubnetGroup VPCSecurityGroups [RDSSecurityGroup]
+24.   if production environment
+25.     Set MultiAZ true
+26.   else
+27.     Set MultiAZ false
+28. Define AWS::AutoScaling::LaunchTemplate
+29.   Set ImageId via SSM resolve latest Amazon Linux 2 AMI
+30.   Set InstanceType !Ref InstanceType KeyName !Ref KeyName
+31.   Set IamInstanceProfile !Ref EC2InstanceProfile
+32.   Set UserData script to install Node.js, CodeDeploy agent, signal cfn-signal on success
+33. Define AWS::AutoScaling::AutoScalingGroup MinSize 1 MaxSize 3 DesiredCapacity 2
+34.   Set VPCZoneIdentifier [Subnet1, Subnet2]
+35.   Set TargetGroupARNs [TargetGroup]
+36.   Add CreationPolicy ResourceSignal Count 2 Timeout PT10M
+37. Define AWS::CodeDeploy::Application EtherpadApp ComputePlatform Server
+38. Define AWS::CodeDeploy::DeploymentGroup
+39.   Set ApplicationName !Ref EtherpadApp
+40.   Set ServiceRoleArn !GetAtt CodeDeployServiceRole.Arn
+41.   Set AutoScalingGroups [AutoScalingGroup]
+42.   Set LoadBalancerInfo TargetGroupInfoList [TargetGroup]
+---
+
+Now produce the SCoT plan for the following business need:
+
+<business_need>
+"""
+
+
+SCOT_PLAN_BOTTOM = f"""
+</business_need>
+
+{AWS_BEST_PRACTICES_REMINDER}
+
+Output ONLY the structured plan in the Input/Output/numbered format above. Do NOT write any CloudFormation YAML yet."""
+
+# Phase 2 – same generation prompt as TWO_STEP
+SCOT_GENERATE_PROMPT = TWO_STEP_GENERATE_PROMPT
+
+
+# ─────────────────────────────────────────────
+# CGO: Chain of Grounded Objectives
+# ─────────────────────────────────────────────
+
+CGO_SYSTEM_PROMPT = """You are an Expert AWS Cloud Architect and DevOps Engineer.
+Your job is to design robust, production-ready AWS environments and then implement them using AWS CloudFormation.
+You operate in a strict automated pipeline."""
+
+# Phase 1 – Ask the LLM to generate concise functional objectives (no fixed structure)
+CGO_PLAN_TOP = """Analyze the following business need and generate a compact, numbered list of functional objectives
+that a CloudFormation template must satisfy. Each objective must be a concrete, verifiable deployment requirement.
+
+Here is one example at medium difficulty:
+
+--- Example (Difficulty Level 3) ---
+Business need: We need a CloudFormation template that creates an Amazon S3 bucket for website hosting and with a DeletionPolicy.
+Objectives:
+1. Provision an AWS::S3::Bucket with WebsiteConfiguration (IndexDocument: index.html, ErrorDocument: error.html)
+2. Disable all four PublicAccessBlock flags to allow public website reads
+3. Apply DeletionPolicy: Retain and UpdateReplacePolicy: Retain to protect bucket data on stack deletion
+4. Provision an AWS::S3::BucketPolicy granting s3:GetObject to Principal * scoped to all objects in the bucket
+5. Output the WebsiteURL (via WebsiteURL attribute) and the HTTPS DomainName of the bucket
+---
+
+Now generate the objectives list for the following business need:
+
+<business_need>
+"""
+
+
+CGO_PLAN_BOTTOM = f"""
+</business_need>
+
+{AWS_BEST_PRACTICES_REMINDER}
+
+Output ONLY the numbered objectives list (5–10 items). Do NOT write any CloudFormation YAML yet."""
+
+# Phase 2 – same generation prompt
+CGO_GENERATE_PROMPT = TWO_STEP_GENERATE_PROMPT 
