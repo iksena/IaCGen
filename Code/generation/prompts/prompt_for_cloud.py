@@ -265,3 +265,90 @@ Output ONLY the numbered objectives list (5–10 items). Do NOT write any CloudF
 
 # Phase 2 – same generation prompt
 CGO_GENERATE_PROMPT = TWO_STEP_GENERATE_PROMPT 
+
+# ─────────────────────────────────────────────
+# CDK: CDK Assertion-Guided Generation (Python)
+# ─────────────────────────────────────────────
+
+CDK_SYSTEM_PROMPT = """You are an Expert AWS Cloud Architect and DevOps Engineer.
+Your job is to design robust, production-ready AWS environments and implement them using AWS CloudFormation.
+You operate in a strict automated pipeline."""
+
+# Phase 1 – Generate Python CDK assertions from business need
+CDK_ASSERTION_TOP = """You are an expert AWS CDK engineer. Given the following business need,
+generate Python CDK v2 assertion code using the aws_cdk.assertions library.
+
+You will generate ONLY the body of a pytest test function. The imports, Template loading,
+and pytest fixture are already handled by a boilerplate wrapper — do NOT include them.
+
+The test function signature you must implement is:
+    def test_template(template: Template):
+
+The `template` parameter is a fully loaded aws_cdk.assertions.Template object.
+You have access to these already-imported names — use them directly, do not re-import:
+    Template, Match, Capture   (from aws_cdk.assertions)
+    pytest                     (standard pytest)
+
+Available assertion methods:
+- template.has_resource_properties(type, props)
+- template.has_resource(type, props)
+- template.resource_count_is(type, count)
+- template.has_output(id, props)
+- template.has_mapping(id, props)
+- template.has_condition(id, props)
+- template.has_parameter(id, props)
+- template.find_resources(type, props)
+- template.find_outputs(id, props)
+
+Available Match helpers:
+    Match.object_like, Match.object_equals, Match.array_with, Match.array_equals,
+    Match.string_like_regexp, Match.any_value, Match.absent, Match.not_
+
+Use Capture() when a value must be inspected but is dynamically generated.
+
+Rules:
+- Start directly with 'def test_template(template: Template):'
+- Assert every resource type, key property values, outputs, and parameters the business need implies.
+- Use Match.string_like_regexp for dynamic values (AMI IDs, ARNs, account IDs).
+- Use Match.absent() to assert properties that must NOT exist.
+- Do NOT include import statements.
+- Do NOT include a fixture or any loading logic.
+- Do NOT include any code outside the test function.
+
+Business need:
+
+<business_need>
+"""
+
+CDK_ASSERTION_BOTTOM = """
+</business_need>
+
+Output ONLY the test function inside <cdk_assertions> tags. No explanations, no imports."""
+
+# Phase 2 – Generate CloudFormation template from business need + CDK assertions
+CDK_GENERATE_TOP = """Based on the following business need and the CDK assertion test file below,
+generate a complete, production-ready AWS CloudFormation YAML template that satisfies
+the business need AND passes all provided CDK assertions.
+
+<business_need>
+"""
+
+CDK_GENERATE_MIDDLE = """
+</business_need>
+
+The template MUST pass every assertion in the following CDK Python test file:
+
+<cdk_assertions>
+"""
+
+CDK_GENERATE_BOTTOM = f"""
+</cdk_assertions>
+
+{AWS_BEST_PRACTICES_REMINDER}
+
+CRITICAL INSTRUCTIONS:
+1. Start the template with 'AWSTemplateFormatVersion'.
+2. Provide all required properties for each resource.
+3. Ensure proper YAML syntax and indentation.
+4. Write your complete CloudFormation YAML template strictly inside <iac_template></iac_template> tags.
+5. Do NOT include any markdown code blocks (like ```yaml) inside or outside the tags."""

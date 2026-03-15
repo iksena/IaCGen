@@ -12,6 +12,7 @@ from generation.cloud_generation import (
     claude_generate_cf_template
 )
 from evaluation.cloud_evaluation import (
+    evaluate_template_with_cdk_assertions,
     yaml_syntax_validation,
     evaluate_template_with_linter,
     evaluate_template_deployment,
@@ -22,6 +23,8 @@ from generation.prompts.prompt_for_cloud import (
     TWO_STEP_GENERATE_PROMPT, TWO_STEP_PLAN_BOTTOM, TWO_STEP_PLAN_TOP, TWO_STEP_SYSTEM_PROMPT,
     SCOT_SYSTEM_PROMPT, SCOT_PLAN_TOP, SCOT_PLAN_BOTTOM, SCOT_GENERATE_PROMPT,
     CGO_SYSTEM_PROMPT, CGO_PLAN_TOP, CGO_PLAN_BOTTOM, CGO_GENERATE_PROMPT,
+    CDK_SYSTEM_PROMPT, CDK_ASSERTION_TOP, CDK_ASSERTION_BOTTOM,
+    CDK_GENERATE_TOP, CDK_GENERATE_MIDDLE, CDK_GENERATE_BOTTOM,
 )
 
 # Load environment variables from .env file
@@ -342,54 +345,124 @@ class IterativeTemplateGenerator:
                 }
                 self.error_history.append(record)
 
+    @staticmethod
+    def _extract_cdk_assertions(raw_text: str) -> str:
+        """
+        Extract Python CDK assertion code from LLM output.
+        Tries in order:
+        1. <cdk_assertions>...</cdk_assertions> tags (preferred)
+        2. ```python ... ``` fenced code block
+        3. ``` ... ``` fenced code block (any language)
+        4. First occurrence of 'import' onwards (bare code fallback)
+        5. Raw text as-is if nothing else matches
+        """
+        # Strategy 1: explicit tags
+        start_tag, end_tag = "<cdk_assertions>", "</cdk_assertions>"
+        s = raw_text.find(start_tag)
+        e = raw_text.find(end_tag)
+        if s != -1 and e != -1:
+            return raw_text[s + len(start_tag):e].strip()
+
+        # Strategy 2: ```python fenced block
+        import re
+        python_block = re.search(r'```python\s*\n(.*?)```', raw_text, re.DOTALL)
+        if python_block:
+            return python_block.group(1).strip()
+
+        # Strategy 3: any fenced block
+        any_block = re.search(r'```(?:\w+)?\s*\n(.*?)```', raw_text, re.DOTALL)
+        if any_block:
+            return any_block.group(1).strip()
+
+        # Strategy 4: find first import statement and take everything from there
+        import_pos = raw_text.find("import ")
+        if import_pos != -1:
+            print("Warning: CDK assertions tags not found — falling back to first 'import' position.")
+            return raw_text[import_pos:].strip()
+
+        # Strategy 5: return raw, let downstream handle it
+        print("Warning: Could not extract CDK assertions — using raw LLM output.")
+        return raw_text.strip()
+
+
     def process_template(self, initial_prompt, ground_truth_path, row_number):
         stages_error_count = {self.YAML_STAGE_NAME: 0, self.SYNTAX_STAGE_NAME: 0, self.DEPLOYMENT_STAGE_NAME: 0}
         iteration = 1
         conversation_history = []
         highest_feedback_level = self.FEEDBACK_LEVELS[0]  # Start with 'simple'
 
-        # --- PHASE 1: PLANNING (CoT) ---
         print(f"\nRow {row_number} - Generating Architecture Plan...")
+        assertions_path = None  # only set for cdk strategy
+
         strategy_map = {
             "two_step": (TWO_STEP_SYSTEM_PROMPT, TWO_STEP_PLAN_TOP,  TWO_STEP_PLAN_BOTTOM,  TWO_STEP_GENERATE_PROMPT),
             "scot":     (SCOT_SYSTEM_PROMPT,     SCOT_PLAN_TOP,      SCOT_PLAN_BOTTOM,      SCOT_GENERATE_PROMPT),
             "cgo":      (CGO_SYSTEM_PROMPT,      CGO_PLAN_TOP,       CGO_PLAN_BOTTOM,       CGO_GENERATE_PROMPT),
         }
-        sys_prompt, plan_top, plan_bottom, gen_prompt = strategy_map[self.prompt_strategy]
-        
-        # 1. Initialize system prompt
-        conversation_history.append({
-            "role": "system",
-            "content": sys_prompt
-        })
-        
-        # 2. Ask for the plan
-        conversation_history.append({
-            "role": "user",
-            "content": plan_top + initial_prompt + plan_bottom
-        })
-        
-        # 3. Get the plan from the LLM and add it to history
-        plan_text = self.generate_plan_response(conversation_history)
-        conversation_history.append({
-            "role": "assistant",
-            "content": plan_text
-        })
-        
-        # --- PHASE 2: TEMPLATE GENERATION & EVALUATION LOOP ---
-        # 4. Prompt the LLM to write the code based on the plan
+        if self.prompt_strategy == "cdk":
+            # Phase 1a: Generate Python CDK assertions
+            conversation_history.append({"role": "system", "content": CDK_SYSTEM_PROMPT})
+            conversation_history.append({
+                "role": "user",
+                "content": CDK_ASSERTION_TOP + initial_prompt + CDK_ASSERTION_BOTTOM
+            })
+            assertions_raw = self.generate_plan_response(conversation_history)
+            conversation_history.append({"role": "assistant", "content": assertions_raw})
 
-        # Initialize conversation with system context
-        # conversation_history.append({
-        #     "role": "system",
-        #     "content": FORMATE_SYSTEM_PROMPT
-        # })
-        
-        # Add initial user prompt
-        conversation_history.append({
-            "role": "user",
-            "content": gen_prompt
-        })
+            # Failsafe extraction — handles missing tags, fenced blocks, bare code
+            clean_assertions = self._extract_cdk_assertions(assertions_raw)
+
+            # Save assertions file once per row (reused across all retry iterations)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            assertions_dir = f"{self.output_base_path}{self.llm_type}/{self.llm_model}/"
+            os.makedirs(assertions_dir, exist_ok=True)
+            assertions_path = f"{assertions_dir}row_{row_number}_assertions_{timestamp}.py"
+            with open(assertions_path, 'w') as f:
+                f.write(clean_assertions)
+            print(f"Row {row_number} - CDK assertions saved to {assertions_path}")
+
+            # Phase 1b: Generate template satisfying business need + assertions
+            conversation_history.append({
+                "role": "user",
+                "content": CDK_GENERATE_TOP + initial_prompt + CDK_GENERATE_MIDDLE + clean_assertions + CDK_GENERATE_BOTTOM
+            })
+
+        else:
+            sys_prompt, plan_top, plan_bottom, gen_prompt = strategy_map[self.prompt_strategy]
+            
+            # 1. Initialize system prompt
+            conversation_history.append({
+                "role": "system",
+                "content": sys_prompt
+            })
+            
+            # 2. Ask for the plan
+            conversation_history.append({
+                "role": "user",
+                "content": plan_top + initial_prompt + plan_bottom
+            })
+            
+            # 3. Get the plan from the LLM and add it to history
+            plan_text = self.generate_plan_response(conversation_history)
+            conversation_history.append({
+                "role": "assistant",
+                "content": plan_text
+            })
+            
+            # --- PHASE 2: TEMPLATE GENERATION & EVALUATION LOOP ---
+            # 4. Prompt the LLM to write the code based on the plan
+
+            # Initialize conversation with system context
+            # conversation_history.append({
+            #     "role": "system",
+            #     "content": FORMATE_SYSTEM_PROMPT
+            # })
+            
+            # Add initial user prompt
+            conversation_history.append({
+                "role": "user",
+                "content": gen_prompt
+            })
         
         while iteration <= self.max_iterations:
             print(f"\nRow {row_number} Iteration {iteration}")
@@ -416,6 +489,12 @@ class IterativeTemplateGenerator:
             
             if evaluation_result['success']:
                 print("Template generation successful!")
+                cdk_result = {}
+                if self.prompt_strategy == "cdk" and assertions_path:
+                    print(f"Row {row_number} - Running CDK assertion tests...")
+                    cdk_result = evaluate_template_with_cdk_assertions(template_path, assertions_path)
+                    print(f"Row {row_number} - CDK passed: {cdk_result.get('cdk_passed')}, "
+                        f"pass: {cdk_result.get('cdk_pass_count')}, fail: {cdk_result.get('cdk_fail_count')}")
                 return {
                     'template_path': template_path,
                     'success': True,
@@ -423,6 +502,10 @@ class IterativeTemplateGenerator:
                     'highest_feedback_level': highest_feedback_level if iteration > 1 else None,   # In case no feedback is given.
                     'coverage_percentage': evaluation_result['coverage_percentage'],
                     'accuracy_percentage': evaluation_result['accuracy_percentage'],
+                    'assertions_path': assertions_path, 
+                    'cdk_passed': cdk_result.get('cdk_passed', None),
+                    'cdk_pass_count': cdk_result.get('cdk_pass_count', None),
+                    'cdk_fail_count': cdk_result.get('cdk_fail_count', None),
                     # 'missing_resources': evaluation_result['missing_resources'],
                     # 'extra_resources': evaluation_result['extra_resources'],
                     'conversation_history': conversation_history
@@ -454,6 +537,10 @@ class IterativeTemplateGenerator:
                     'failed_stage': evaluation_result['stage'],
                     'iterations': iteration,
                     'highest_feedback_level': highest_feedback_level,
+                    'assertions_path': assertions_path, 
+                    'cdk_passed': None,
+                    'cdk_pass_count': None,
+                    'cdk_fail_count': None,
                     'conversation_history': conversation_history
                 }
 
@@ -497,6 +584,10 @@ class IterativeTemplateGenerator:
             'failed_stage': evaluation_result['stage'],
             'iterations': iteration - 1,
             'highest_feedback_level': highest_feedback_level,
+            'assertions_path': assertions_path, 
+            'cdk_passed': None,
+            'cdk_pass_count': None,
+            'cdk_fail_count': None,
             'conversation_history': conversation_history
         }
 
@@ -830,6 +921,7 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
                     'prompt': row['prompt'],
                     'ground_truth_path': row['ground_truth_path'],
                     'final_template_path': result.get('template_path'),
+                    'assertions_path': result.get('assertions_path', None),
 
                     # Success Metrics
                     'success': result['success'],
@@ -848,6 +940,9 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
                     # Model Information
                     # 'llm_type': generator.llm_type,
                     # 'llm_model': generator.llm_model,
+                    'cdk_passed': result.get('cdk_passed', None),                # ← NEW
+                    'cdk_pass_count': result.get('cdk_pass_count', None),        # ← NEW
+                    'cdk_fail_count': result.get('cdk_fail_count', None),        # ← NEW
                 }
                 generator.generate_conversation_history(result['conversation_history'], "llm_generated_data/iterative/history", result['success'], index)
 
@@ -876,7 +971,7 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
 # Start
 if __name__ == "__main__":
     print("IaCGen Starting")
-    prompt_strategy = "scot"  # "two_step", "scot", or "cgo"
+    prompt_strategy = "cdk"  # "two_step", "scot", or "cgo"
     input_csv = "../Data/iac_basic.csv"
     llm_type = "deepseek"  # "gemini", "gpt", "claude", or "deepseek"
     # llm_model = "gpt-5-mini"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
