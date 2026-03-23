@@ -486,15 +486,28 @@ class IterativeTemplateGenerator:
             
             # Evaluate template
             evaluation_result = self.evaluate_template(template_path, ground_truth_path)
+
+            cdk_result = {}
+            if self.prompt_strategy == "cdk" and assertions_path:
+                try:
+                    print(f"Row {row_number} Iteration {iteration} - Running CDK assertions...")
+                    cdk_result = evaluate_template_with_cdk_assertions(template_path, assertions_path)
+                    print(
+                        f"  CDK: passed={cdk_result.get('cdk_passed')}, "
+                        f"pass={cdk_result.get('cdk_pass_count')}, "
+                        f"fail={cdk_result.get('cdk_fail_count')}"
+                    )
+                except Exception as e:
+                    print(f"  CDK assertions raised an unexpected exception: {e}")
+                    cdk_result = {
+                        'cdk_passed': None,
+                        'cdk_pass_count': 0,
+                        'cdk_fail_count': 0,
+                        'cdk_output': f"Exception: {str(e)}"
+                    }
             
             if evaluation_result['success']:
                 print("Template generation successful!")
-                cdk_result = {}
-                if self.prompt_strategy == "cdk" and assertions_path:
-                    print(f"Row {row_number} - Running CDK assertion tests...")
-                    cdk_result = evaluate_template_with_cdk_assertions(template_path, assertions_path)
-                    print(f"Row {row_number} - CDK passed: {cdk_result.get('cdk_passed')}, "
-                        f"pass: {cdk_result.get('cdk_pass_count')}, fail: {cdk_result.get('cdk_fail_count')}")
                 return {
                     'template_path': template_path,
                     'success': True,

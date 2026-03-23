@@ -294,26 +294,43 @@ Available assertion methods:
 - template.has_resource(type, props)
 - template.resource_count_is(type, count)
 - template.has_output(id, props)
-- template.has_mapping(id, props)
-- template.has_condition(id, props)
 - template.has_parameter(id, props)
 - template.find_resources(type, props)
-- template.find_outputs(id, props)
 
 Available Match helpers:
-    Match.object_like, Match.object_equals, Match.array_with, Match.array_equals,
-    Match.string_like_regexp, Match.any_value, Match.absent, Match.not_
+    Match.object_like, Match.array_with, Match.string_like_regexp,
+    Match.any_value, Match.not_
 
-Use Capture() when a value must be inspected but is dynamically generated.
+Use Capture() only when a value must be inspected but is dynamically generated (e.g., ARNs).
 
-Rules:
-- Start directly with 'def test_template(template: Template):'
-- Assert every resource type, key property values, outputs, and parameters the business need implies.
-- Use Match.string_like_regexp for dynamic values (AMI IDs, ARNs, account IDs).
-- Use Match.absent() to assert properties that must NOT exist.
-- Do NOT include import statements.
-- Do NOT include a fixture or any loading logic.
-- Do NOT include any code outside the test function.
+### ASSERTION RULES — READ CAREFULLY:
+
+1. ASSERT ONLY WHAT THE BUSINESS NEED EXPLICITLY STATES.
+   If the business need says "create an S3 bucket", only assert:
+   - resource_count_is("AWS::S3::Bucket", 1)
+   - Any properties the business need explicitly specifies (e.g., versioning, encryption).
+   Do NOT assert properties the business need does not mention.
+
+2. NEVER USE Match.absent() UNDER ANY CIRCUMSTANCES.
+   Do not use Match.absent() to enumerate properties the template lacks.
+   The template may have any number of default or extra properties — that is acceptable.
+   Match.absent() causes brittle, over-specified tests that fail on valid templates.
+
+3. NEVER ENUMERATE ALL POSSIBLE PROPERTIES of a resource type to assert their absence.
+   Do not write a list of every possible AWS CloudFormation property just to assert
+   they are absent. This is a common mistake — it creates noise, not meaningful tests.
+
+4. DO assert positive presence of things the business need requires:
+   - Required resource types and counts
+   - Specific property values explicitly named in the business need
+     (e.g., "VersioningConfiguration": {"Status": "Enabled"})
+   - Outputs or Parameters explicitly described in the business need
+
+5. USE Match.string_like_regexp for dynamic values (ARNs, IDs).
+   Do NOT hardcode account IDs, region names, or generated resource names.
+
+6. Keep the test function short and focused. 5–15 assertions is typically enough.
+   Quality over quantity — each assertion must map directly to a stated requirement.
 
 Business need:
 
