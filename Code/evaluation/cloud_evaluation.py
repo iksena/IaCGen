@@ -1,3 +1,4 @@
+import os
 import subprocess
 import json
 import yaml
@@ -9,6 +10,7 @@ import pandas as pd
 import datetime
 from yamllint import linter
 from yamllint.config import YamlLintConfig
+import requests
 
 
 # Not using, do not support yaml file currently. 
@@ -180,6 +182,51 @@ def evaluate_template_with_linter(template_path):
         'error_details': error_details
     }
 
+def _reset_localstack_state(localstack_url: str = "http://localhost:4566", wait: float = 1.5):
+    """
+    Hard-reset all LocalStack services before each deployment attempt.
+    Prevents ResourceInUseException from previous iteration's leftover resources.
+    """
+    try:
+        resp = requests.post(f"{localstack_url}/_localstack/state/reset", timeout=10)
+        if resp.status_code == 200:
+            print("[LocalStack] State reset OK")
+        else:
+            print(f"[LocalStack] Reset returned HTTP {resp.status_code} — proceeding anyway")
+    except requests.exceptions.ConnectionError:
+        print("[LocalStack] Could not connect for reset — is LocalStack running?")
+    except Exception as e:
+        print(f"[LocalStack] Reset failed: {e}")
+    
+    time.sleep(wait)  # Allow LocalStack to reinitialise services before stack creation
+
+
+def _wait_for_stack_deletion(cfn_client, stack_id: str, stack_name: str, timeout: int = 120):
+    """
+    Block until the CloudFormation stack is fully deleted (DELETE_COMPLETE)
+    or the timeout is reached. Critical for LocalStack where resource cleanup is async.
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            stack = cfn_client.describe_stacks(StackName=stack_id)['Stacks'][0]
+            status = stack['StackStatus']
+            if status == 'DELETE_COMPLETE':
+                return
+            if status in ['ROLLBACK_COMPLETE', 'CREATE_FAILED']:
+                # Stack exists but not yet deleting — trigger deletion explicitly
+                try:
+                    cfn_client.delete_stack(StackName=stack_name)
+                except Exception:
+                    pass
+        except ClientError as e:
+            # Stack no longer exists = fully deleted
+            if 'does not exist' in str(e):
+                return
+            raise
+        time.sleep(3)
+    print(f"[WARNING] Stack {stack_name} deletion timed out after {timeout}s — proceeding anyway")
+
 
 # Useful - Deploy Correctness
 def evaluate_template_deployment(template_path):
@@ -203,6 +250,7 @@ def evaluate_template_deployment(template_path):
         template_body = f.read()
     
     try:
+        _reset_localstack_state()
         # Generate a unique stack name
         stack_name = f'validation-stack-{uuid.uuid4().hex[:8]}'
         
@@ -272,7 +320,21 @@ def evaluate_template_deployment(template_path):
                     'completed_resources': completed_resources,
                     'stack_events': None
                 }
-            elif status in ['CREATE_FAILED', 'ROLLBACK_COMPLETE', 'ROLLBACK_FAILED', 'DELETE_COMPLETE']:
+            elif status in ['CREATE_FAILED', 'ROLLBACK_COMPLETE', 'ROLLBACK_FAILED']:
+                # Capture the failure info first
+                result = {
+                    'success': False,
+                    'error_message': failed_reason[0]['reason'] if failed_reason else "Unknown error",
+                    'stack_id': stack_id,
+                    'failed_reason': failed_reason,
+                    'completed_resources': completed_resources,
+                    'stack_events': list(seen_events)
+                }
+                
+                # Wait for full deletion before returning (prevents ResourceInUseException on next iteration)
+                _wait_for_stack_deletion(cfn_client, stack_id, stack_name)
+                return result
+            elif status == 'DELETE_COMPLETE':
                 # print("Returning")
                 return {
                     'success': False,
@@ -448,6 +510,109 @@ def evaluate_templates_from_csv(csv_input_path, csv_output_path, llm_type):
     results_df = pd.DataFrame(results)
     results_df.to_csv(csv_output_path, index=False)
     return results_df
+
+def evaluate_template_with_cdk_assertions(template_path: str, assertions_path: str) -> dict:
+    """
+    Runs LLM-generated CDK assertions against a CloudFormation template.
+
+    Steps:
+      1. Convert YAML template → JSON (written to a temp file).
+      2. Read the static boilerplate and inject the LLM assertion snippet.
+      3. Write the combined file to a temp .py file.
+      4. Run pytest on the combined file, passing the JSON path via TEMPLATE_JSON_PATH env var.
+    """
+    import tempfile, re
+
+    BOILERPLATE_PATH = os.path.join(
+        os.path.dirname(__file__), "boilerplate_cdk_assertion.py"
+    )
+
+    # ── Step 1: Convert YAML → JSON ──────────────────────────────────────────
+    class CloudFormationLoader(yaml.SafeLoader):
+        pass
+
+    def construct_cfn_tag(loader, node):
+        if isinstance(node, yaml.ScalarNode):   return node.value
+        if isinstance(node, yaml.SequenceNode): return loader.construct_sequence(node)
+        if isinstance(node, yaml.MappingNode):  return loader.construct_mapping(node)
+
+    for tag in ['!Ref','!Sub','!GetAtt','!Join','!Select','!Split','!Equals','!If',
+                '!FindInMap','!GetAZs','!Base64','!Cidr','!Transform','!ImportValue',
+                '!Not','!And','!Or','!Condition']:
+        CloudFormationLoader.add_constructor(tag, construct_cfn_tag)
+
+    try:
+        with open(template_path, 'r') as f:
+            template_dict = yaml.load(f, Loader=CloudFormationLoader)
+    except Exception as e:
+        return {
+            'cdk_passed': False, 'cdk_pass_count': 0, 'cdk_fail_count': 0,
+            'cdk_output': f"YAML parse error: {str(e)}"
+        }
+
+    # ── Step 2: Read boilerplate and inject LLM assertions ───────────────────
+    try:
+        with open(BOILERPLATE_PATH, 'r') as f:
+            boilerplate = f.read()
+        with open(assertions_path, 'r') as f:
+            llm_assertions = f.read().strip()
+        combined = boilerplate.replace("{assertions_placeholder}", llm_assertions)
+    except Exception as e:
+        return {
+            'cdk_passed': False, 'cdk_pass_count': 0, 'cdk_fail_count': 0,
+            'cdk_output': f"Boilerplate/assertions read error: {str(e)}"
+        }
+
+    # ── Step 3 & 4: Write temp files and run pytest ──────────────────────────
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Write template JSON
+        template_json_path = os.path.join(tmpdir, "template.json")
+        with open(template_json_path, 'w') as f:
+            json.dump(template_dict, f, indent=2)
+
+        # Write combined test file
+        combined_test_path = os.path.join(tmpdir, "test_combined.py")
+        with open(combined_test_path, 'w') as f:
+            f.write(combined)
+
+        try:
+            env = os.environ.copy()
+            env["TEMPLATE_JSON_PATH"] = template_json_path
+
+            result = subprocess.run(
+                ["python", "-m", "pytest", combined_test_path,
+                 "-v", "--tb=short", "--no-header"],
+                capture_output=True, text=True, timeout=60,
+                cwd=tmpdir, env=env
+            )
+            output = result.stdout + result.stderr
+
+            pass_count, fail_count = 0, 0
+            for line in output.splitlines():
+                p  = re.search(r'(\d+) passed', line)
+                f_ = re.search(r'(\d+) failed', line)
+                e_ = re.search(r'(\d+) error',  line)
+                if p:  pass_count  = int(p.group(1))
+                if f_: fail_count += int(f_.group(1))
+                if e_: fail_count += int(e_.group(1))
+
+            return {
+                'cdk_passed':     result.returncode == 0,
+                'cdk_pass_count': pass_count,
+                'cdk_fail_count': fail_count,
+                'cdk_output':     output
+            }
+
+        except subprocess.TimeoutExpired:
+            return {
+                'cdk_passed': False, 'cdk_pass_count': 0, 'cdk_fail_count': 0,
+                'cdk_output': "pytest timed out after 60 seconds"
+            }
+        except Exception as e:
+            return {
+                'cdk_passed': False, 'cdk_pass_count': 0, 'cdk_fail_count': 0,
+                'cdk_output': f"Unexpected error: {str(e)}"
+            }
 
 
 def main():

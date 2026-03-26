@@ -103,7 +103,8 @@ def process_checkov_result(passed_checks, failed_checks):
         {
             'id': check['check_id'],
             'name': check['check_name'],
-            'resource': check['resource']
+            'resource': check['resource'],
+            'guideline': check.get('guideline', '')
         }
         for check in security_failed_checks
     ]
@@ -176,6 +177,65 @@ def process_security_validation_with_checkov(input_csv: str, output_csv: str, st
         
     except Exception as e:
         print(f"Error processing CSV file: {str(e)}")
+
+# ADD to the bottom of Code/security.py (above the __main__ block)
+
+SECURITY_PASS_THRESHOLD = 0.80   # 80% of checks must pass to proceed to deployability
+
+
+def evaluate_security_stage(template_path: str, pass_threshold: float = SECURITY_PASS_THRESHOLD) -> dict:
+    """
+    Run Checkov on a CloudFormation template and decide whether it can proceed
+    to the deployability stage based on a pass-rate threshold.
+
+    Returns a dict compatible with evaluate_template()'s shape:
+        {
+            'success': bool,          # True  → above threshold, proceed
+            'stage': str,             # 'security_validation' on failure
+            'error': list[dict],      # failed check dicts (for feedback generation)
+            'pass_percentage': float, # e.g. 85.0
+            'passed_checks': int,
+            'failed_checks': int,
+            'total_checks': int,
+        }
+    """
+    result = validate_security_with_checkov_package(template_path)
+
+    if not result.get("success", True) and "error" in result:
+        # Checkov itself crashed
+        return {
+            "success": False,
+            "stage": "security_validation",
+            "error": [{"check_id": "CHECKOV_ERROR", "check_name": result["error"], "resource": "N/A", "guideline": ""}],
+            "pass_percentage": 0.0,
+            "passed_checks": 0,
+            "failed_checks": 0,
+            "total_checks": 0,
+        }
+
+    details = result["security_check_details"]
+    pass_pct = details["pass_percentage"]          # already 0–100
+    above_threshold = (pass_pct / 100.0) >= pass_threshold
+
+    # Build the full failed_check list (needed for remediation prompt)
+    failed_check_details = []
+    for check in details.get("failed_check_details", []):
+        failed_check_details.append({
+            "check_id": check["id"],
+            "check_name": check["name"],
+            "resource": check["resource"],
+            "guideline": "",   # guideline URL not stored in process_checkov_result; see note below
+        })
+
+    return {
+        "success": above_threshold,
+        "stage": "security_validation",
+        "error": failed_check_details,           # list of failed checks
+        "pass_percentage": pass_pct,
+        "passed_checks": details["passed_checks"],
+        "failed_checks": details["failed_checks"],
+        "total_checks": details["total_checks"],
+    }
 
 
 # Start

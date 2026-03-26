@@ -1,27 +1,25 @@
 AWS_BEST_PRACTICES_REMINDER = """
-### CRITICAL AWS BEST PRACTICES & LINTING RULES
-To ensure the template deploys successfully and passes cfn-lint, you MUST adhere to the following rules based on common historical failures:
+### CRITICAL AWS RULES — Follow exactly or deployment will fail.
+1. **Parameters:** Every Parameter MUST have a `Default` value. Default MUST satisfy any `AllowedPattern`/`AllowedValues` constraints. Never define a KeyPair Parameter.
 
-1. **Parameters & Missing Values:** - NEVER define Parameters without providing a safe `Default` value (e.g., default CIDR blocks, default dummy email addresses, or default KeyPair names like 'default-key'). The automated deployment will fail if parameters require manual input.
-   - If a Parameter has an `AllowedPattern`, its `Default` value must strictly match that pattern.
+2. **AMI IDs:** Never hardcode. Use a typed SSM Parameter:
+   LatestAmiId:
+     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
 
-2. **Hardcoding (AMIs & AZs):**
-   - NEVER hardcode AMI IDs (e.g., ami-0c55...). Use AWS Systems Manager (SSM) Parameter Store to fetch the latest AMIs dynamically (e.g., 'resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2').
-   - NEVER hardcode Availability Zones (e.g., 'us-east-1a'). Always use the `Fn::Select` and `Fn::GetAZs` intrinsic functions.
+3. **Availability Zones:** Never hardcode. Always use !Select [0, !GetAZs ''].
 
-3. **S3 Bucket Modernization:**
-   - Do NOT use the legacy `AccessControl` property for S3 Buckets. Use `AWS::S3::BucketPolicy` instead. 
-   - If `AccessControl` is strictly required for some reason, you MUST also configure `OwnershipControls`.
+4. **S3:** Never use AccessControl. Use PublicAccessBlockConfiguration and AWS::S3::BucketPolicy instead.
 
-4. **Resource Protection & Linting:**
-   - If you specify a `DeletionPolicy` on a stateful resource (like a database or bucket), you MUST also include an `UpdateReplacePolicy`.
-   - Do not use `Fn::Sub` (or `!Sub`) if the string does not contain any variables (e.g., `${Var}`).
-   - Do not hallucinate properties. For example, do not add `FilterCriteria` or `Default` to properties where the CloudFormation schema does not allow them.
+5. **DeletionPolicy:** If set, UpdateReplacePolicy MUST also be set to the same value.
 
-5. **Security & Runtimes:**
-   - Use dynamic references (e.g., `{{resolve:secretsmanager:...}}` or `{{resolve:ssm-secure:...}}`) instead of raw Parameters for passing secrets or passwords.
-   - For AWS Lambda, NEVER use deprecated runtimes (like `python3.8`). Always use the latest supported runtimes (e.g., `python3.12` or `nodejs20.x`).
-   - Ensure AWS managed IAM Policy ARNs and Resource Type names are exact and currently valid (e.g., use `AWS::Logs::QueryDefinition`, not `AWS::CloudWatchLogs::QueryDefinition`).
+6. **Intrinsic Functions:** Never use !Sub on strings with no ${Variable}. Never invent properties — only use schema-valid CloudFormation properties. Use exact resource type names (e.g., AWS::Logs::QueryDefinition). Never set Arn as a writable resource property. ARNs are read-only attributes accessed via !GetAtt Resource.Arn, never set directly in Properties.
+
+7. **Lambda Runtimes:** Never use deprecated runtimes (python3.8, python3.9, nodejs14.x). Use python3.12, nodejs20.x, or java21.
+
+8. **Secrets:** Never hardcode passwords. Define secrets as AWS::SecretsManager::Secret in the same template and reference with {{resolve:secretsmanager:${MySecret}}}.
+
+9. **IAM:** Never combine Action: '*' with Resource: '*'. Scope to minimum required actions and specific ARNs.
 """
 
 # Prompts used in IaCGen
@@ -265,3 +263,107 @@ Output ONLY the numbered objectives list (5–10 items). Do NOT write any CloudF
 
 # Phase 2 – same generation prompt
 CGO_GENERATE_PROMPT = TWO_STEP_GENERATE_PROMPT 
+
+# ─────────────────────────────────────────────
+# CDK: CDK Assertion-Guided Generation (Python)
+# ─────────────────────────────────────────────
+
+CDK_SYSTEM_PROMPT = """You are an Expert AWS Cloud Architect and DevOps Engineer.
+Your job is to design robust, production-ready AWS environments and implement them using AWS CloudFormation.
+You operate in a strict automated pipeline."""
+
+# Phase 1 – Generate Python CDK assertions from business need
+CDK_ASSERTION_TOP = """You are an expert AWS CDK engineer. Given the following business need,
+generate Python CDK v2 assertion code using the aws_cdk.assertions library.
+
+You will generate ONLY the body of a pytest test function. The imports, Template loading,
+and pytest fixture are already handled by a boilerplate wrapper — do NOT include them.
+
+The test function signature you must implement is:
+    def test_template(template: Template):
+
+The `template` parameter is a fully loaded aws_cdk.assertions.Template object.
+You have access to these already-imported names — use them directly, do not re-import:
+    Template, Match, Capture   (from aws_cdk.assertions)
+    pytest                     (standard pytest)
+
+Available assertion methods:
+- template.has_resource_properties(type, props)
+- template.has_resource(type, props)
+- template.resource_count_is(type, count)
+- template.has_output(id, props)
+- template.has_parameter(id, props)
+- template.find_resources(type, props)
+
+Available Match helpers:
+    Match.object_like, Match.array_with, Match.string_like_regexp,
+    Match.any_value, Match.not_
+
+Use Capture() only when a value must be inspected but is dynamically generated (e.g., ARNs).
+
+### ASSERTION RULES — READ CAREFULLY:
+
+1. ASSERT ONLY WHAT THE BUSINESS NEED EXPLICITLY STATES.
+   If the business need says "create an S3 bucket", only assert:
+   - resource_count_is("AWS::S3::Bucket", 1)
+   - Any properties the business need explicitly specifies (e.g., versioning, encryption).
+   Do NOT assert properties the business need does not mention.
+
+2. NEVER USE Match.absent() UNDER ANY CIRCUMSTANCES.
+   Do not use Match.absent() to enumerate properties the template lacks.
+   The template may have any number of default or extra properties — that is acceptable.
+   Match.absent() causes brittle, over-specified tests that fail on valid templates.
+
+3. NEVER ENUMERATE ALL POSSIBLE PROPERTIES of a resource type to assert their absence.
+   Do not write a list of every possible AWS CloudFormation property just to assert
+   they are absent. This is a common mistake — it creates noise, not meaningful tests.
+
+4. DO assert positive presence of things the business need requires:
+   - Required resource types and counts
+   - Specific property values explicitly named in the business need
+     (e.g., "VersioningConfiguration": {"Status": "Enabled"})
+   - Outputs or Parameters explicitly described in the business need
+
+5. USE Match.string_like_regexp for dynamic values (ARNs, IDs).
+   Do NOT hardcode account IDs, region names, or generated resource names.
+
+6. Keep the test function short and focused. 5–15 assertions is typically enough.
+   Quality over quantity — each assertion must map directly to a stated requirement.
+
+Business need:
+
+<business_need>
+"""
+
+CDK_ASSERTION_BOTTOM = """
+</business_need>
+
+Output ONLY the test function inside <cdk_assertions> tags. No explanations, no imports."""
+
+# Phase 2 – Generate CloudFormation template from business need + CDK assertions
+CDK_GENERATE_TOP = """Based on the following business need and the CDK assertion test file below,
+generate a complete, production-ready AWS CloudFormation YAML template that satisfies
+the business need AND passes all provided CDK assertions.
+
+<business_need>
+"""
+
+CDK_GENERATE_MIDDLE = """
+</business_need>
+
+The template MUST pass every assertion in the following CDK Python test file:
+
+<cdk_assertions>
+"""
+
+CDK_GENERATE_BOTTOM = f"""
+</cdk_assertions>
+
+{AWS_BEST_PRACTICES_REMINDER}
+
+CRITICAL INSTRUCTIONS:
+1. Start the template with 'AWSTemplateFormatVersion'.
+2. Provide all required properties for each resource.
+3. Ensure proper YAML syntax and indentation.
+4. Write your complete CloudFormation YAML template strictly inside <iac_template></iac_template> tags.
+5. Do NOT include any markdown code blocks (like ```yaml) inside or outside the tags."""
