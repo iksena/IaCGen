@@ -23,6 +23,10 @@ from generation.prompts.prompt_for_cloud import (
     SCOT_SYSTEM_PROMPT, SCOT_PLAN_TOP, SCOT_PLAN_BOTTOM, SCOT_GENERATE_PROMPT,
     CGO_SYSTEM_PROMPT, CGO_PLAN_TOP, CGO_PLAN_BOTTOM, CGO_GENERATE_PROMPT,
 )
+# ADD after the existing imports, around line 20
+from security import evaluate_security_stage
+from checkov_context import get_checkov_policy_context
+
 
 # Load environment variables from .env file
 load_dotenv()
@@ -38,6 +42,9 @@ class IterativeTemplateGenerator:
     YAML_STAGE_NAME = 'yaml_validation'
     SYNTAX_STAGE_NAME = 'syntax_validation'
     DEPLOYMENT_STAGE_NAME = 'deployment'
+    # INSIDE class IterativeTemplateGenerator — add after DEPLOYMENT_STAGE_NAME (line ~41)
+    SECURITY_STAGE_NAME = 'security_validation'
+    SECURITY_PASS_THRESHOLD = 1   # proceed to deployability if ≥100% checks pass
     FEEDBACK_LEVELS = ['simple', 'moderate', 'advanced']
     TEMPLATE_SHOWN_CHARACTERS = 1000
     # Static variable to store error history across all instances
@@ -48,9 +55,9 @@ class IterativeTemplateGenerator:
         self.llm_model = llm_model
         self.prompt_strategy = prompt_strategy
         self.simple_level_max_iterations = 0
-        self.moderate_level_max_iterations = 5
+        self.moderate_level_max_iterations = 10
         self.advance_level_max_iterations = 0
-        self.max_iterations = 5
+        self.max_iterations = 10
         self.max_same_error_attempts = self.simple_level_max_iterations + self.moderate_level_max_iterations + self.advance_level_max_iterations
         self.output_base_path = "llm_generated_data/template/iterative/"
         self.setup_llm_model()
@@ -128,6 +135,20 @@ class IterativeTemplateGenerator:
                 'error': syntax_result['error_details']
             }
 
+        # ── NEW: Step 2.5: Security validation (Checkov) ──────────────────────────
+        security_result = evaluate_security_stage(template_path, self.SECURITY_PASS_THRESHOLD)
+        if not security_result['success']:
+            return {
+                'success': False,
+                'stage': self.SECURITY_STAGE_NAME,
+                'error': security_result['error'],          # list of failed check dicts
+                'pass_percentage': security_result['pass_percentage'],
+                'passed_checks': security_result['passed_checks'],
+                'failed_checks': security_result['failed_checks'],
+                'total_checks': security_result['total_checks'],
+            }
+        # ── END NEW ───────────────────────────────────────────────────────────────
+
         # Step 3: Deployment validation
         deploy_result = evaluate_template_deployment(template_path)
         if not deploy_result['success']:
@@ -146,6 +167,7 @@ class IterativeTemplateGenerator:
             'extra_resources': coverage_result['extra_resources'],
             'coverage_percentage': coverage_result['coverage_percentage'],
             'accuracy_percentage': coverage_result['accuracy_percentage'],
+            'security_pass_percentage': security_result['pass_percentage'],  # ← fixed: include security pass percentage in final success result
         }
 
     # Done
@@ -160,6 +182,17 @@ class IterativeTemplateGenerator:
         
         stage = evaluation_result['stage']
         error = evaluation_result['error']
+
+        # ── NEW: Security stage gets its own feedback path ────────────────────────
+        if stage == self.SECURITY_STAGE_NAME:
+            pass_pct = evaluation_result.get('pass_percentage', 0.0)
+            if feedback_level == 'simple':
+                feedback = self.generate_security_simple_feedback(error, pass_pct)
+            else:
+                # moderate and advanced both get full policy-context feedback
+                feedback = self.generate_security_remediation_feedback(error, pass_pct)
+            return feedback, feedback_level
+        # ── END NEW ───────────────────────────────────────────────────────────────
         
         if feedback_level == 'simple':
             feedback = self.generate_simple_level_feedback(stage, error)
@@ -282,6 +315,44 @@ class IterativeTemplateGenerator:
         human_feedback = "\n".join(feedback_lines)
         
         return human_feedback
+    
+    # ADD these two methods inside class IterativeTemplateGenerator,
+    def generate_security_remediation_feedback(self, failed_checks: list[dict], pass_percentage: float) -> str:
+        """
+        LLMSecConfig-style security remediation feedback.
+        Injects Checkov policy source code context (Stream 2) for each failed check.
+        """
+        policy_context = get_checkov_policy_context(failed_checks)
+
+        feedback = (
+            f"\nThe template failed the security validation stage. "
+            f"Pass rate: {pass_percentage:.1f}% "
+            f"(threshold: {self.SECURITY_PASS_THRESHOLD * 100:.0f}%).\n"
+            f"The following Checkov security checks failed:\n"
+        )
+        for check in failed_checks:
+            feedback += f"  - [{check['check_id']}] {check['check_name']} on resource: {check['resource']}\n"
+
+        if policy_context:
+            feedback += (
+                "\n=== Security Policy Reference ===\n"
+                "Use the following policy definitions and fix examples to correct each violation:\n\n"
+                f"{policy_context}\n"
+                "=================================\n"
+            )
+
+        feedback += "\nPlease regenerate the CloudFormation template fixing all security violations listed above.\n"
+        return feedback
+
+    def generate_security_simple_feedback(self, failed_checks: list[dict], pass_percentage: float) -> str:
+        """Minimal feedback for the security stage (no policy context injected)."""
+        return (
+            f"\nThe template failed the security validation stage "
+            f"(pass rate: {pass_percentage:.1f}%, threshold: {self.SECURITY_PASS_THRESHOLD * 100:.0f}%). "
+            f"{len(failed_checks)} Checkov security check(s) failed. "
+            f"Please fix the security misconfigurations.\n"
+        )
+
 
     def add_error_record(self, template_path, row_number, iteration_number, error_result, stage_attempt_count):
         """
@@ -341,14 +412,25 @@ class IterativeTemplateGenerator:
                     'resource_name': 'N/A'
                 }
                 self.error_history.append(record)
+        # In add_error_record(), ADD a security stage branch in the if/elif chain:
+        elif stage == self.SECURITY_STAGE_NAME:
+            for check in error:   # error is a list of failed check dicts
+                record = {
+                    **base_record,
+                    'error_message': f"[{check['check_id']}] {check['check_name']}",
+                    'resource_name': check.get('resource', 'N/A')
+                }
+                self.error_history.append(record)
+
+
+
 
     def process_template(self, initial_prompt, ground_truth_path, row_number):
-        stages_error_count = {self.YAML_STAGE_NAME: 0, self.SYNTAX_STAGE_NAME: 0, self.DEPLOYMENT_STAGE_NAME: 0}
+        stages_error_count = {self.YAML_STAGE_NAME: 0, self.SYNTAX_STAGE_NAME: 0, self.SECURITY_STAGE_NAME: 0, self.DEPLOYMENT_STAGE_NAME: 0}
         iteration = 1
         conversation_history = []
         highest_feedback_level = self.FEEDBACK_LEVELS[0]  # Start with 'simple'
 
-        # --- PHASE 1: PLANNING (CoT) ---
         print(f"\nRow {row_number} - Generating Architecture Plan...")
         strategy_map = {
             "two_step": (TWO_STEP_SYSTEM_PROMPT, TWO_STEP_PLAN_TOP,  TWO_STEP_PLAN_BOTTOM,  TWO_STEP_GENERATE_PROMPT),
@@ -422,6 +504,7 @@ class IterativeTemplateGenerator:
                     'iterations': iteration,
                     'highest_feedback_level': highest_feedback_level if iteration > 1 else None,   # In case no feedback is given.
                     'coverage_percentage': evaluation_result['coverage_percentage'],
+                    'security_pass_percentage': evaluation_result.get('security_pass_percentage'),   # only set when security stage is reached
                     'accuracy_percentage': evaluation_result['accuracy_percentage'],
                     # 'missing_resources': evaluation_result['missing_resources'],
                     # 'extra_resources': evaluation_result['extra_resources'],
@@ -429,8 +512,8 @@ class IterativeTemplateGenerator:
                 }
             
             # Track stage errors
-            current_stage = evaluation_result['stage']
-            stage_attempt_count = stages_error_count[current_stage]
+            current_stage = evaluation_result.get('stage')
+            stage_attempt_count = stages_error_count.get(current_stage, 0)
 
            # Store error record before incrementing the counter
             if not evaluation_result['success']:
@@ -454,7 +537,8 @@ class IterativeTemplateGenerator:
                     'failed_stage': evaluation_result['stage'],
                     'iterations': iteration,
                     'highest_feedback_level': highest_feedback_level,
-                    'conversation_history': conversation_history
+                    'conversation_history': conversation_history,
+                    'security_pass_percentage': evaluation_result.get('pass_percentage', None) if evaluation_result.get('stage') == self.SECURITY_STAGE_NAME else None,
                 }
 
             # Below code is used to track if an iteration fail into the same erro. 
@@ -488,7 +572,12 @@ class IterativeTemplateGenerator:
             })
             
             iteration += 1
-            stages_error_count[current_stage] += 1
+            current_stage = evaluation_result.get('stage')
+            if current_stage in stages_error_count:
+                stages_error_count[current_stage] += 1
+            else:
+                print(f"[WARNING] Unknown stage '{current_stage}' — skipping counter increment")
+
         
         return {
             'template_path': template_path,
@@ -842,6 +931,7 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
                     # Coverage and Accuracy Metrics
                     'coverage_percentage': result.get('coverage_percentage', None),
                     'accuracy_percentage': result.get('accuracy_percentage', None),
+                    'security_pass_percentage': result.get('security_pass_percentage', None),
                     # 'missing_resources': result.get('missing_resources', []),
                     # 'extra_resources': result.get('extra_resources', []),
 
@@ -876,7 +966,7 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
 # Start
 if __name__ == "__main__":
     print("IaCGen Starting")
-    prompt_strategy = "scot"  # "two_step", "scot", or "cgo"
+    prompt_strategy = "cgo"  # "two_step", "scot", or "cgo"
     input_csv = "../Data/iac_basic.csv"
     llm_type = "deepseek"  # "gemini", "gpt", "claude", or "deepseek"
     # llm_model = "gpt-5-mini"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]

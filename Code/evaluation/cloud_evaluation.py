@@ -1,3 +1,4 @@
+import os
 import subprocess
 import json
 import yaml
@@ -9,6 +10,7 @@ import pandas as pd
 import datetime
 from yamllint import linter
 from yamllint.config import YamlLintConfig
+import requests
 
 
 # Not using, do not support yaml file currently. 
@@ -180,6 +182,51 @@ def evaluate_template_with_linter(template_path):
         'error_details': error_details
     }
 
+def _reset_localstack_state(localstack_url: str = "http://localhost:4566", wait: float = 1.5):
+    """
+    Hard-reset all LocalStack services before each deployment attempt.
+    Prevents ResourceInUseException from previous iteration's leftover resources.
+    """
+    try:
+        resp = requests.post(f"{localstack_url}/_localstack/state/reset", timeout=10)
+        if resp.status_code == 200:
+            print("[LocalStack] State reset OK")
+        else:
+            print(f"[LocalStack] Reset returned HTTP {resp.status_code} — proceeding anyway")
+    except requests.exceptions.ConnectionError:
+        print("[LocalStack] Could not connect for reset — is LocalStack running?")
+    except Exception as e:
+        print(f"[LocalStack] Reset failed: {e}")
+    
+    time.sleep(wait)  # Allow LocalStack to reinitialise services before stack creation
+
+
+def _wait_for_stack_deletion(cfn_client, stack_id: str, stack_name: str, timeout: int = 120):
+    """
+    Block until the CloudFormation stack is fully deleted (DELETE_COMPLETE)
+    or the timeout is reached. Critical for LocalStack where resource cleanup is async.
+    """
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            stack = cfn_client.describe_stacks(StackName=stack_id)['Stacks'][0]
+            status = stack['StackStatus']
+            if status == 'DELETE_COMPLETE':
+                return
+            if status in ['ROLLBACK_COMPLETE', 'CREATE_FAILED']:
+                # Stack exists but not yet deleting — trigger deletion explicitly
+                try:
+                    cfn_client.delete_stack(StackName=stack_name)
+                except Exception:
+                    pass
+        except ClientError as e:
+            # Stack no longer exists = fully deleted
+            if 'does not exist' in str(e):
+                return
+            raise
+        time.sleep(3)
+    print(f"[WARNING] Stack {stack_name} deletion timed out after {timeout}s — proceeding anyway")
+
 
 # Useful - Deploy Correctness
 def evaluate_template_deployment(template_path):
@@ -203,6 +250,7 @@ def evaluate_template_deployment(template_path):
         template_body = f.read()
     
     try:
+        _reset_localstack_state()
         # Generate a unique stack name
         stack_name = f'validation-stack-{uuid.uuid4().hex[:8]}'
         
@@ -272,7 +320,21 @@ def evaluate_template_deployment(template_path):
                     'completed_resources': completed_resources,
                     'stack_events': None
                 }
-            elif status in ['CREATE_FAILED', 'ROLLBACK_COMPLETE', 'ROLLBACK_FAILED', 'DELETE_COMPLETE']:
+            elif status in ['CREATE_FAILED', 'ROLLBACK_COMPLETE', 'ROLLBACK_FAILED']:
+                # Capture the failure info first
+                result = {
+                    'success': False,
+                    'error_message': failed_reason[0]['reason'] if failed_reason else "Unknown error",
+                    'stack_id': stack_id,
+                    'failed_reason': failed_reason,
+                    'completed_resources': completed_resources,
+                    'stack_events': list(seen_events)
+                }
+                
+                # Wait for full deletion before returning (prevents ResourceInUseException on next iteration)
+                _wait_for_stack_deletion(cfn_client, stack_id, stack_name)
+                return result
+            elif status == 'DELETE_COMPLETE':
                 # print("Returning")
                 return {
                     'success': False,
