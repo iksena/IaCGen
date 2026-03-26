@@ -1,27 +1,25 @@
 AWS_BEST_PRACTICES_REMINDER = """
-### CRITICAL AWS BEST PRACTICES & LINTING RULES
-To ensure the template deploys successfully and passes cfn-lint, you MUST adhere to the following rules based on common historical failures:
+### CRITICAL AWS RULES — Follow exactly or deployment will fail.
+1. **Parameters:** Every Parameter MUST have a `Default` value. Default MUST satisfy any `AllowedPattern`/`AllowedValues` constraints. Never define a KeyPair Parameter.
 
-1. **Parameters & Missing Values:** - NEVER define Parameters without providing a safe `Default` value (e.g., default CIDR blocks, default dummy email addresses, or default KeyPair names like 'default-key'). The automated deployment will fail if parameters require manual input.
-   - If a Parameter has an `AllowedPattern`, its `Default` value must strictly match that pattern.
+2. **AMI IDs:** Never hardcode. Use a typed SSM Parameter:
+   LatestAmiId:
+     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
 
-2. **Hardcoding (AMIs & AZs):**
-   - NEVER hardcode AMI IDs (e.g., ami-0c55...). Use AWS Systems Manager (SSM) Parameter Store to fetch the latest AMIs dynamically (e.g., 'resolve:ssm:/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2').
-   - NEVER hardcode Availability Zones (e.g., 'us-east-1a'). Always use the `Fn::Select` and `Fn::GetAZs` intrinsic functions.
+3. **Availability Zones:** Never hardcode. Always use !Select [0, !GetAZs ''].
 
-3. **S3 Bucket Modernization:**
-   - Do NOT use the legacy `AccessControl` property for S3 Buckets. Use `AWS::S3::BucketPolicy` instead. 
-   - If `AccessControl` is strictly required for some reason, you MUST also configure `OwnershipControls`.
+4. **S3:** Never use AccessControl. Use PublicAccessBlockConfiguration and AWS::S3::BucketPolicy instead.
 
-4. **Resource Protection & Linting:**
-   - If you specify a `DeletionPolicy` on a stateful resource (like a database or bucket), you MUST also include an `UpdateReplacePolicy`.
-   - Do not use `Fn::Sub` (or `!Sub`) if the string does not contain any variables (e.g., `${Var}`).
-   - Do not hallucinate properties. For example, do not add `FilterCriteria` or `Default` to properties where the CloudFormation schema does not allow them.
+5. **DeletionPolicy:** If set, UpdateReplacePolicy MUST also be set to the same value.
 
-5. **Security & Runtimes:**
-   - Use dynamic references (e.g., `{{resolve:secretsmanager:...}}` or `{{resolve:ssm-secure:...}}`) instead of raw Parameters for passing secrets or passwords.
-   - For AWS Lambda, NEVER use deprecated runtimes (like `python3.8`). Always use the latest supported runtimes (e.g., `python3.12` or `nodejs20.x`).
-   - Ensure AWS managed IAM Policy ARNs and Resource Type names are exact and currently valid (e.g., use `AWS::Logs::QueryDefinition`, not `AWS::CloudWatchLogs::QueryDefinition`).
+6. **Intrinsic Functions:** Never use !Sub on strings with no ${Variable}. Never invent properties — only use schema-valid CloudFormation properties. Use exact resource type names (e.g., AWS::Logs::QueryDefinition). Never set Arn as a writable resource property. ARNs are read-only attributes accessed via !GetAtt Resource.Arn, never set directly in Properties.
+
+7. **Lambda Runtimes:** Never use deprecated runtimes (python3.8, python3.9, nodejs14.x). Use python3.12, nodejs20.x, or java21.
+
+8. **Secrets:** Never hardcode passwords. Define secrets as AWS::SecretsManager::Secret in the same template and reference with {{resolve:secretsmanager:${MySecret}}}.
+
+9. **IAM:** Never combine Action: '*' with Resource: '*'. Scope to minimum required actions and specific ARNs.
 """
 
 # Prompts used in IaCGen

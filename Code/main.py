@@ -58,9 +58,9 @@ class IterativeTemplateGenerator:
         self.llm_model = llm_model
         self.prompt_strategy = prompt_strategy
         self.simple_level_max_iterations = 0
-        self.moderate_level_max_iterations = 5
+        self.moderate_level_max_iterations = 10
         self.advance_level_max_iterations = 0
-        self.max_iterations = 5
+        self.max_iterations = 10
         self.max_same_error_attempts = self.simple_level_max_iterations + self.moderate_level_max_iterations + self.advance_level_max_iterations
         self.output_base_path = "llm_generated_data/template/iterative/"
         self.setup_llm_model()
@@ -170,6 +170,7 @@ class IterativeTemplateGenerator:
             'extra_resources': coverage_result['extra_resources'],
             'coverage_percentage': coverage_result['coverage_percentage'],
             'accuracy_percentage': coverage_result['accuracy_percentage'],
+            'security_pass_percentage': security_result['pass_percentage'],  # ← fixed: include security pass percentage in final success result
         }
 
     # Done
@@ -594,7 +595,7 @@ class IterativeTemplateGenerator:
                     'iterations': iteration,
                     'highest_feedback_level': highest_feedback_level if iteration > 1 else None,   # In case no feedback is given.
                     'coverage_percentage': evaluation_result['coverage_percentage'],
-                    'security_pass_percentage': None,   # only set when security stage is reached
+                    'security_pass_percentage': evaluation_result.get('security_pass_percentage'),   # only set when security stage is reached
                     'accuracy_percentage': evaluation_result['accuracy_percentage'],
                     'assertions_path': assertions_path, 
                     'cdk_passed': cdk_result.get('cdk_passed', None),
@@ -606,8 +607,8 @@ class IterativeTemplateGenerator:
                 }
             
             # Track stage errors
-            current_stage = evaluation_result['stage']
-            stage_attempt_count = stages_error_count[current_stage]
+            current_stage = evaluation_result.get('stage')
+            stage_attempt_count = stages_error_count.get(current_stage, 0)
 
            # Store error record before incrementing the counter
             if not evaluation_result['success']:
@@ -670,7 +671,12 @@ class IterativeTemplateGenerator:
             })
             
             iteration += 1
-            stages_error_count[current_stage] += 1
+            current_stage = evaluation_result.get('stage')
+            if current_stage in stages_error_count:
+                stages_error_count[current_stage] += 1
+            else:
+                print(f"[WARNING] Unknown stage '{current_stage}' — skipping counter increment")
+
         
         return {
             'template_path': template_path,
