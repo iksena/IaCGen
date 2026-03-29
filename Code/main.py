@@ -22,6 +22,7 @@ from generation.prompts.prompt_for_cloud import (
     TWO_STEP_GENERATE_PROMPT, TWO_STEP_PLAN_BOTTOM, TWO_STEP_PLAN_TOP, TWO_STEP_SYSTEM_PROMPT,
     SCOT_SYSTEM_PROMPT, SCOT_PLAN_TOP, SCOT_PLAN_BOTTOM, SCOT_GENERATE_PROMPT,
     CGO_SYSTEM_PROMPT, CGO_PLAN_TOP, CGO_PLAN_BOTTOM, CGO_GENERATE_PROMPT,
+    IIR_SYSTEM_PROMPT, IIR_PLAN_TOP, IIR_PLAN_BOTTOM, IIR_GENERATE_PROMPT,
 )
 
 # Load environment variables from .env file
@@ -342,6 +343,59 @@ class IterativeTemplateGenerator:
                 }
                 self.error_history.append(record)
 
+    def _extract_and_save_iir(self, plan_text: str, row_number: int,
+                            output_base_path: str = "llm_generated_data/iir/") -> str:
+        """
+        Extract the <i_ir>...</i_ir> block from the LLM response, validate it
+        against the expected schema, and persist it for post-hoc analysis.
+        Returns the original plan_text unchanged so the caller can still append
+        it verbatim to the conversation history.
+        """
+        import re, json, os
+        from datetime import datetime
+
+        tag_pattern = re.compile(r"<i_ir>(.*?)</i_ir>", re.DOTALL)
+        match = tag_pattern.search(plan_text)
+        if not match:
+            print(f"[I-IR WARNING] Row {row_number}: <i_ir> tags not found in plan response.")
+            return plan_text
+
+        raw_json = match.group(1).strip()
+        try:
+            iir = json.loads(raw_json)
+        except json.JSONDecodeError as e:
+            print(f"[I-IR WARNING] Row {row_number}: I-IR JSON parse failed: {e}")
+            return plan_text
+
+        # --- Schema validation (lightweight) ---
+        required_keys = {"resources", "edges", "invariants"}
+        missing = required_keys - iir.keys()
+        if missing:
+            print(f"[I-IR WARNING] Row {row_number}: I-IR missing keys: {missing}")
+
+        resource_ids = {r.get("id") for r in iir.get("resources", [])}
+        for edge in iir.get("edges", []):
+            for endpoint in ("from", "to"):
+                if edge.get(endpoint) not in resource_ids:
+                    print(f"[I-IR WARNING] Row {row_number}: edge {edge} references "
+                        f"unknown resource '{edge.get(endpoint)}'")
+
+        # --- Persist for tracing ---
+        output_path = os.path.join(
+            output_base_path,
+            self.llm_type, self.llm_model
+        )
+        os.makedirs(output_path, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        iir_file = os.path.join(output_path, f"row_{row_number}_iir_{timestamp}.json")
+        with open(iir_file, "w") as f:
+            json.dump(iir, f, indent=2)
+        print(f"[I-IR] Row {row_number}: I-IR saved to {iir_file} "
+            f"({len(resource_ids)} resources, {len(iir.get('edges', []))} edges)")
+
+        return plan_text
+
+
     def process_template(self, initial_prompt, ground_truth_path, row_number):
         stages_error_count = {self.YAML_STAGE_NAME: 0, self.SYNTAX_STAGE_NAME: 0, self.DEPLOYMENT_STAGE_NAME: 0}
         iteration = 1
@@ -354,6 +408,7 @@ class IterativeTemplateGenerator:
             "two_step": (TWO_STEP_SYSTEM_PROMPT, TWO_STEP_PLAN_TOP,  TWO_STEP_PLAN_BOTTOM,  TWO_STEP_GENERATE_PROMPT),
             "scot":     (SCOT_SYSTEM_PROMPT,     SCOT_PLAN_TOP,      SCOT_PLAN_BOTTOM,      SCOT_GENERATE_PROMPT),
             "cgo":      (CGO_SYSTEM_PROMPT,      CGO_PLAN_TOP,       CGO_PLAN_BOTTOM,       CGO_GENERATE_PROMPT),
+            "i_ir":     (IIR_SYSTEM_PROMPT,      IIR_PLAN_TOP,       IIR_PLAN_BOTTOM,       IIR_GENERATE_PROMPT),
         }
         sys_prompt, plan_top, plan_bottom, gen_prompt = strategy_map[self.prompt_strategy]
         
@@ -371,6 +426,13 @@ class IterativeTemplateGenerator:
         
         # 3. Get the plan from the LLM and add it to history
         plan_text = self.generate_plan_response(conversation_history)
+
+        # ── I-IR: parse, save, and optionally validate the plan ──────────────
+        if self.prompt_strategy == "i_ir":
+            plan_text = self._extract_and_save_iir(
+                plan_text, row_number, output_base_path="llm_generated_data/iir/"
+            )
+
         conversation_history.append({
             "role": "assistant",
             "content": plan_text
@@ -481,10 +543,29 @@ class IterativeTemplateGenerator:
             if self.FEEDBACK_LEVELS.index(feedback_level) > self.FEEDBACK_LEVELS.index(highest_feedback_level):
                 highest_feedback_level = feedback_level
             
-            # Add the failed attempt and feedback to conversation history
+            # Determine closing instruction based on error stage
+            if self.prompt_strategy == "i_ir":
+                if current_stage in (self.YAML_STAGE_NAME, self.SYNTAX_STAGE_NAME):
+                    repair_instruction = (
+                        "Fix the YAML fields directly. "
+                        "You do NOT need to regenerate the I-IR — only output an improved "
+                        "<iac_template>...</iac_template> block."
+                    )
+                elif current_stage == self.DEPLOYMENT_STAGE_NAME:
+                    repair_instruction = (
+                        "Rethink the affected resources if needed (you may reason briefly in "
+                        "<template_planning>...</template_planning>), then output a corrected "
+                        "<iac_template>...</iac_template> block."
+                    )
+            else:
+                repair_instruction = "Please generate an improved version of the template that addresses these issues."
+
             conversation_history.append({
                 "role": "user",
-                "content": f"The previous template had issues. Given feedback: {feedback}\nPlease generate an improved version of the template that addresses these issues."
+                "content": (
+                    f"The previous template had issues. Given feedback:\n{feedback}\n"
+                    f"{repair_instruction}"
+                )
             })
             
             iteration += 1
@@ -876,7 +957,7 @@ def process_ioc_csv(input_csv, output_csv, llm_type, llm_model, start_row=0, end
 # Start
 if __name__ == "__main__":
     print("IaCGen Starting")
-    prompt_strategy = "scot"  # "two_step", "scot", or "cgo"
+    prompt_strategy = "i_ir"  # "two_step", "scot", or "cgo"
     input_csv = "../Data/iac_basic.csv"
     llm_type = "deepseek"  # "gemini", "gpt", "claude", or "deepseek"
     # llm_model = "gpt-5-mini"  # [gemini-1.5-flash, gpt-4o, o3-mini, o1, claude-3-5-sonnet-20241022, claude-3-7-sonnet-20250219, deepseek-chat [V3], deepseek-reasoner [R1]]
