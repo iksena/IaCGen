@@ -44,7 +44,7 @@ class IterativeTemplateGenerator:
     DEPLOYMENT_STAGE_NAME = 'deployment'
     # INSIDE class IterativeTemplateGenerator — add after DEPLOYMENT_STAGE_NAME (line ~41)
     SECURITY_STAGE_NAME = 'security_validation'
-    SECURITY_PASS_THRESHOLD = 1   # proceed to deployability if ≥100% checks pass
+    SECURITY_PASS_THRESHOLD = 1.0   # proceed to deployability if ≥100% checks pass
     FEEDBACK_LEVELS = ['simple', 'moderate', 'advanced']
     TEMPLATE_SHOWN_CHARACTERS = 1000
     # Static variable to store error history across all instances
@@ -186,7 +186,7 @@ class IterativeTemplateGenerator:
         # ── NEW: Security stage gets its own feedback path ────────────────────────
         if stage == self.SECURITY_STAGE_NAME:
             pass_pct = evaluation_result.get('pass_percentage', 0.0)
-            if feedback_level == 'simple':
+            if feedback_level == 'moderate':
                 feedback = self.generate_security_simple_feedback(error, pass_pct)
             else:
                 # moderate and advanced both get full policy-context feedback
@@ -346,10 +346,11 @@ class IterativeTemplateGenerator:
 
     def generate_security_simple_feedback(self, failed_checks: list[dict], pass_percentage: float) -> str:
         """Minimal feedback for the security stage (no policy context injected)."""
+        check_ids = ", ".join(c["check_id"] for c in failed_checks)
         return (
             f"\nThe template failed the security validation stage "
             f"(pass rate: {pass_percentage:.1f}%, threshold: {self.SECURITY_PASS_THRESHOLD * 100:.0f}%). "
-            f"{len(failed_checks)} Checkov security check(s) failed. "
+            f"Failed checks: {check_ids}. "
             f"Please fix the security misconfigurations.\n"
         )
 

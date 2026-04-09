@@ -66,11 +66,15 @@ def get_checkov_policy_context(failed_checks: list[dict]) -> str:
         resource = check.get("resource", "")
 
         # Stream 1: SAT structured output
+        # With:
+        guideline = check.get("guideline", "")
         stream1 = (
             f"Check ID  : {check_id}\n"
             f"Check Name: {check_name}\n"
-            f"Resource  : {resource}"
+            f"Resource  : {resource}\n"
         )
+        if guideline:
+            stream1 += f"Guideline : {guideline}\n"
 
         # Stream 2: Pre-cached policy source code (CSV lookup, no HTTP)
         source_code = entry.get("source_code", "")

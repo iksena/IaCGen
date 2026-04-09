@@ -224,7 +224,7 @@ def evaluate_security_stage(template_path: str, pass_threshold: float = SECURITY
             "check_id": check["id"],
             "check_name": check["name"],
             "resource": check["resource"],
-            "guideline": "",   # guideline URL not stored in process_checkov_result; see note below
+            "guideline": check.get("guideline", ""),  # ← preserve the URL from Checkov
         })
 
     return {
